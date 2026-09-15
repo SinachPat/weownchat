@@ -171,6 +171,15 @@ DigitalOcean monitoring alerts are configured for:
 - CPU usage > 80%
 - Memory usage > 90%
 
+
+
+## Onboarding (Create account / Sign in / paywall)
+
+- **Create account** — `GET /register/` redirects to `oidc_registration_init` (`/oidc/register/`), which sends the browser to Keycloak **registrations** (not the login form). Sign in uses mozilla-django-oidc `/oidc/authenticate/` (Keycloak **auth**). Both share `/oidc/callback/`.
+- **Keycloak** — realm user registration must be enabled for the `billing` client; Valid Redirect URI includes `https://billing.weown.dev/oidc/callback/` (and local equivalents).
+- **No-instance paywall** — after login with zero instances, billing home shows a blocking overlay into `new_instance` (customer agreement → Stripe Checkout). Trial length is `STRIPE_TRIAL_DAYS` (this render's compose sets `7`). Do not set a conflicting Infisical `STRIPE_TRIAL_DAYS`.
+- **Deploy order** — deploy this billing service before updating the landing CTAs that point at `/register/`. Details: `.github/ADR-007-billing-keycloak-registration-onboarding.md`.
+
 ## Support
 
 For issues or questions, open a GitHub issue.
