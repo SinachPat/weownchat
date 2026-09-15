@@ -31,7 +31,7 @@ def healthz(request):
 
 
 def home(request):
-    ctx = {}
+    ctx = {"trial_days": settings.STRIPE_TRIAL_DAYS}
     if request.user.is_authenticated:
         customer = Customer.objects.filter(user=request.user).first()
         ctx["customer"] = customer
