@@ -10,16 +10,19 @@
   {% if not user.is_authenticated %}
     <h1>Your WeOwn account</h1>
     <div class="card">
-      <h2 style="margin-top:0">Get your practice assistant</h2>
-      <p>Create an account to open your WeOwn dashboard. Then start a
-         {% if trial_days %}{{ trial_days }}-day free trial{% else %}subscription{% endif %}
-         to spin up your private AI space — same login for billing and your instance.</p>
-      <p style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin-top:1.1rem">
+      <h2 style="margin-top:0">WeOwn Private AI Instance</h2>
+      <p>Your own private AI workspace: your data stays yours, your team signs in
+         with one WeOwn account, and the assistant can be embedded on your site.</p>
+      {% if trial_days %}
+        <p>Start with a <strong>{{ trial_days }}-day free trial</strong> — card on file,
+           not charged today. Cancel anytime before the trial ends.</p>
+      {% endif %}
+      <p style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin-top:1rem">
         <a class="btn" href="{% url 'oidc_registration_init' %}">Create account</a>
         <a href="{% url 'oidc_authentication_init' %}">Sign in</a>
       </p>
-      <p class="muted" style="margin-top:1rem">New here? Choose <strong>Create account</strong> —
-         confirm your email, then you&rsquo;ll land here to create your instance.</p>
+      <p class="muted">New here? Choose <strong>Create account</strong> — you&rsquo;ll
+         confirm your email, then start your trial and pick your instance name.</p>
     </div>
   {% elif instances %}
     <h1>Your WeOwn account</h1>
@@ -66,6 +69,12 @@
         <a class="btn" href="{% url 'portal' %}">Fix payment</a>
       </div>
     {% endif %}
+    {% if affiliate and not affiliate.active %}
+      <div class="card">
+        <p class="err">Your affiliate agreement isn't signed yet — no payouts until it is.</p>
+        <a class="btn" href="{% url 'affiliate_home' %}">Finish affiliate setup</a>
+      </div>
+    {% endif %}
   {% else %}
     {% comment %}Logged in, no instance: blocking overlay — checkout/trial before the app.{% endcomment %}
     <div class="paywall-shell" aria-hidden="true">
@@ -78,22 +87,16 @@
         <div class="paywall-composer">Message locked until your instance is live…</div>
       </div>
     </div>
-    <div class="paywall-overlay" role="dialog" aria-modal="true" aria-labelledby="paywall-title">
+    <div class="paywall-overlay" role="dialog" aria-modal="true"
+         aria-labelledby="paywall-title" aria-describedby="paywall-desc">
       <div class="paywall-card">
         <h1 id="paywall-title">Your WeOwn account</h1>
-        <p class="paywall-lead">You don&rsquo;t have an instance yet.</p>
-        <a class="btn paywall-cta" href="{% url 'new_instance' %}">Create your AI instance — $1,000/month</a>
+        <p id="paywall-desc" class="paywall-lead">You don&rsquo;t have an instance yet.</p>
+        <a class="btn paywall-cta" href="{% url 'new_instance' %}" autofocus>Create your AI instance</a>
         {% if trial_days %}
           <p class="muted paywall-note">Includes a {{ trial_days }}-day free trial — card on file, not charged today. Cancel anytime before the trial ends.</p>
         {% endif %}
       </div>
-    </div>
-  {% endif %}
-
-  {% if user.is_authenticated and affiliate and not affiliate.active %}
-    <div class="card" style="position:relative;z-index:3">
-      <p class="err">Your affiliate agreement isn't signed yet — no payouts until it is.</p>
-      <a class="btn" href="{% url 'affiliate_home' %}">Finish affiliate setup</a>
     </div>
   {% endif %}
 {% endblock %}

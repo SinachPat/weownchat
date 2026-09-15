@@ -58,6 +58,7 @@ services:
       POSTGRES_PORT: "5432"
       OIDC_OP_ISSUER: https://sso.weown.id/realms/weown-chat
       OIDC_RP_CLIENT_ID: billing
+      STRIPE_TRIAL_DAYS: "7"
     volumes:
       - static_data:/app/staticfiles
       # provisioning_watch state (dedupe + the /ops/provisioning/ dead-man); NOT under

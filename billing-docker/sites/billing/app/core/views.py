@@ -1,5 +1,5 @@
 import datetime
-import secrets
+import time
 from urllib.parse import urlencode
 import hashlib
 import json
@@ -12,11 +12,12 @@ from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 from mozilla_django_oidc.views import OIDCAuthenticationRequestView
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from . import keycloak, mail, stripe_svc
 from django.db.models import Q, Sum
@@ -34,12 +35,13 @@ def healthz(request):
 
 @require_GET
 def register(request):
-    """Landing Create account alias → Keycloak registrations via upstream OIDC view.
+    """Landing Create account alias → Keycloak registrations.
 
-    Prefer ``oidc_registration_init`` (/oidc/register/). This path stays so
-    billing.weown.dev/register/ keeps working.
+    Prefer ``oidc_registration_init`` (/oidc/register/). ``/register/`` stays
+    so billing.weown.dev/register/ and existing landing CTAs keep working.
     """
     return redirect("oidc_registration_init")
+
 
 
 def home(request):

@@ -82,7 +82,7 @@
         <form method="post" action="{% url 'oidc_logout' %}" style="display:inline">{% csrf_token %}<button class="btn" style="background:transparent;color:inherit;text-decoration:underline">Sign out</button></form>
       {% else %}
         <a href="{% url 'oidc_authentication_init' %}">Sign in</a>
-        <a class="btn" href="{% url 'register' %}">Create account</a>
+        <a class="btn" href="{% url 'oidc_registration_init' %}">Create account</a>
       {% endif %}
     </nav>
   </header>

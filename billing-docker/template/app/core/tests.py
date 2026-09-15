@@ -773,6 +773,46 @@ class BrandedRenderTests(TestCase):
         self.assertNotContains(r, "Service delivered on the WeOwn platform.")
 
 
+@override_settings(
+    ALLOWED_HOSTS=["billing.example.test", "testserver"],
+    OIDC_OP_ISSUER="https://sso.example.test/realms/weown-chat",
+    OIDC_RP_CLIENT_ID="billing",
+    OIDC_USE_PKCE=False,
+    OIDC_OP_AUTHORIZATION_ENDPOINT="https://sso.example.test/realms/weown-chat/protocol/openid-connect/auth",
+)
+class RegisterViewTests(TestCase):
+    """Landing /register/ aliases to oidc_registration_init (Keycloak registrations)."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def test_register_aliases_to_oidc_registration_init(self):
+        resp = self.client.get(reverse("register"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("oidc_registration_init"))
+
+    def test_oidc_registration_init_redirects_to_keycloak_registrations(self):
+        resp = self.client.get(reverse("oidc_registration_init"))
+        self.assertEqual(resp.status_code, 302)
+        loc = resp["Location"]
+        self.assertIn("/protocol/openid-connect/registrations?", loc)
+        self.assertIn("client_id=billing", loc)
+        session = self.client.session
+        self.assertIn("oidc_states", session)
+        self.assertTrue(session["oidc_states"])
+
+    def test_authenticated_user_on_register_still_aliases(self):
+        user = User.objects.create_user(username="reguser", email="r@example.test", password="pw")
+        self.client.force_login(user)
+        resp = self.client.get(reverse("register"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("oidc_registration_init"))
+
+    def test_register_post_is_not_allowed(self):
+        resp = self.client.post(reverse("register"))
+        self.assertEqual(resp.status_code, 405)
+
+
 class TemplateCommentSafetyTests(TestCase):
     """Django's {# #} is single-line; a wrapped one is emitted verbatim to customers."""
 
