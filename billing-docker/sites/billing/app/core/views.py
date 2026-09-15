@@ -1,4 +1,6 @@
 import datetime
+import secrets
+from urllib.parse import urlencode
 import hashlib
 import json
 import logging
@@ -10,6 +12,7 @@ from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
+from django.utils.crypto import get_random_string
 from django.utils import timezone
 from mozilla_django_oidc.views import OIDCAuthenticationRequestView
 from django.views.decorators.csrf import csrf_exempt
@@ -28,6 +31,15 @@ log = logging.getLogger(__name__)
 
 def healthz(request):
     return JsonResponse({"ok": True})
+
+@require_GET
+def register(request):
+    """Landing Create account alias → Keycloak registrations via upstream OIDC view.
+
+    Prefer ``oidc_registration_init`` (/oidc/register/). This path stays so
+    billing.weown.dev/register/ keeps working.
+    """
+    return redirect("oidc_registration_init")
 
 
 def home(request):

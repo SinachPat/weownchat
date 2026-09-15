@@ -6,75 +6,59 @@
        is SINGLE-LINE only; a two-line one renders as visible text (2026-09-08).{% endcomment %}
     <meta http-equiv="refresh" content="30">
   {% endif %}
-  <h1>Your WeOwn account</h1>
+
   {% if not user.is_authenticated %}
+    <h1>Your WeOwn account</h1>
     <div class="card">
       <h2 style="margin-top:0">Get your practice assistant</h2>
       <p>Create an account to open your WeOwn dashboard. Then start a
          {% if trial_days %}{{ trial_days }}-day free trial{% else %}subscription{% endif %}
          to spin up your private AI space — same login for billing and your instance.</p>
       <p style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin-top:1.1rem">
-        <a class="btn" href="{% url 'oidc_registration_init' %}">Create your account</a>
+        <a class="btn" href="{% url 'oidc_registration_init' %}">Create account</a>
         <a href="{% url 'oidc_authentication_init' %}">Sign in</a>
       </p>
       <p class="muted" style="margin-top:1rem">New here? Choose <strong>Create account</strong> —
          confirm your email, then you&rsquo;ll land here to create your instance.</p>
     </div>
-  {% else %}
+  {% elif instances %}
+    <h1>Your WeOwn account</h1>
     <div class="card">
-      {% if instances %}
-        <h2 style="margin-top:0">Your instances</h2>
-        {% for i in instances %}
-          <div style="border-top:1px solid rgba(127,127,127,.25);padding:.7rem 0">
-            <strong>{{ i.subdomain }}</strong>{% if i.display_name %} — {{ i.display_name }}{% endif %}
-            {% if i.status == "active" %}
-              — 🟢 live: <a href="{{ i.url }}/app">{{ i.url }}/app</a>
-            {% elif i.status == "provisioning" %}
-              — 🛠️ <strong>being set up</strong>
-              <div class="muted" style="margin:.35rem 0 0 1rem;font-size:.9rem">
-                ✅ Payment received &nbsp;·&nbsp; ⏳ Server + domain &nbsp;·&nbsp; ⏳ AI workspace
-                &nbsp;·&nbsp; ⏳ Your login<br>
-                Ready within 2 business days — we'll email {{ user.email }} with the link.
-                This page updates itself; you don't need to keep checking.
-              </div>
-            {% elif i.status == "paused" %}
-              — ⏸️ paused. <a href="{% url 'suspended' %}">Why?</a>
-            {% elif i.status == "requested" %}
-              — awaiting payment
-            {% elif i.status == "destroying" %}
-              — being removed
-            {% endif %}
-            {% if i.subscription %}
-              <span class="muted">· subscription {{ i.subscription.status }}</span>
-            {% elif i.status == "requested" %}
-              <a href="{% url 'new_instance' %}">— finish payment</a>
-            {% endif %}
-          </div>
-        {% endfor %}
-        <p style="margin-top:.9rem">
-          <a class="btn" href="{% url 'new_instance' %}">Add another instance</a>
-          &nbsp;<a href="{% url 'home' %}">Refresh</a>
-          {% if customer.stripe_customer_id %}
-            &nbsp;<a href="{% url 'portal' %}">Manage billing</a>
+      <h2 style="margin-top:0">Your instances</h2>
+      {% for i in instances %}
+        <div style="border-top:1px solid rgba(127,127,127,.25);padding:.7rem 0">
+          <strong>{{ i.subdomain }}</strong>{% if i.display_name %} — {{ i.display_name }}{% endif %}
+          {% if i.status == "active" %}
+            — 🟢 live: <a href="{{ i.url }}/app">{{ i.url }}/app</a>
+          {% elif i.status == "provisioning" %}
+            — 🛠️ <strong>being set up</strong>
+            <div class="muted" style="margin:.35rem 0 0 1rem;font-size:.9rem">
+              ✅ Payment received &nbsp;·&nbsp; ⏳ Server + domain &nbsp;·&nbsp; ⏳ AI workspace
+              &nbsp;·&nbsp; ⏳ Your login<br>
+              Ready within 2 business days — we'll email {{ user.email }} with the link.
+              This page updates itself; you don't need to keep checking.
+            </div>
+          {% elif i.status == "paused" %}
+            — ⏸️ paused. <a href="{% url 'suspended' %}">Why?</a>
+          {% elif i.status == "requested" %}
+            — awaiting payment
+            <a href="{% url 'new_instance' %}">— finish payment</a>
+          {% elif i.status == "destroying" %}
+            — being removed
           {% endif %}
-        </p>
-      {% else %}
-        {% comment %}No-instance callout — first destination after signup (matches product overlay){% endcomment %}
-        <div class="no-instance-panel">
-          <p style="margin:0 0 1rem;font-size:1.05rem">You don&rsquo;t have an instance yet.</p>
-          {% if trial_days %}
-            <a class="btn" href="{% url 'new_instance' %}">Start your {{ trial_days }}-day free trial</a>
-            <p class="muted" style="margin:.85rem 0 0">Your card is saved now but <strong>not charged today</strong>.
-               After the trial, billing continues at your plan rate unless you cancel.
-               This uses the same WeOwn billing you just signed into.</p>
-          {% else %}
-            <a class="btn" href="{% url 'new_instance' %}">Create your AI instance</a>
-            <p class="muted" style="margin:.85rem 0 0">Continue to pick a name and complete payment with our existing billing checkout.</p>
+          {% if i.subscription %}
+            <span class="muted">· subscription {{ i.subscription.status }}</span>
           {% endif %}
         </div>
-      {% endif %}
+      {% endfor %}
+      <p style="margin-top:.9rem">
+        <a class="btn" href="{% url 'new_instance' %}">Add another instance</a>
+        &nbsp;<a href="{% url 'home' %}">Refresh</a>
+        {% if customer.stripe_customer_id %}
+          &nbsp;<a href="{% url 'portal' %}">Manage billing</a>
+        {% endif %}
+      </p>
     </div>
-
     {% if subscription and subscription.status == "past_due" %}
       <div class="card">
         <p class="err">⚠️ Your last payment failed. Please update your payment method
@@ -82,12 +66,34 @@
         <a class="btn" href="{% url 'portal' %}">Fix payment</a>
       </div>
     {% endif %}
-
-    {% if affiliate and not affiliate.active %}
-      <div class="card">
-        <p class="err">Your affiliate agreement isn't signed yet — no payouts until it is.</p>
-        <a class="btn" href="{% url 'affiliate_home' %}">Finish affiliate setup</a>
+  {% else %}
+    {% comment %}Logged in, no instance: blocking overlay — checkout/trial before the app.{% endcomment %}
+    <div class="paywall-shell" aria-hidden="true">
+      <div class="paywall-chat-mock">
+        <div class="paywall-chat-top">Practice assistant</div>
+        <div class="paywall-bubbles">
+          <div class="paywall-a">Hi — how can I help today?</div>
+          <div class="paywall-u">What are your hours?</div>
+        </div>
+        <div class="paywall-composer">Message locked until your instance is live…</div>
       </div>
-    {% endif %}
+    </div>
+    <div class="paywall-overlay" role="dialog" aria-modal="true" aria-labelledby="paywall-title">
+      <div class="paywall-card">
+        <h1 id="paywall-title">Your WeOwn account</h1>
+        <p class="paywall-lead">You don&rsquo;t have an instance yet.</p>
+        <a class="btn paywall-cta" href="{% url 'new_instance' %}">Create your AI instance — $1,000/month</a>
+        {% if trial_days %}
+          <p class="muted paywall-note">Includes a {{ trial_days }}-day free trial — card on file, not charged today. Cancel anytime before the trial ends.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if user.is_authenticated and affiliate and not affiliate.active %}
+    <div class="card" style="position:relative;z-index:3">
+      <p class="err">Your affiliate agreement isn't signed yet — no payouts until it is.</p>
+      <a class="btn" href="{% url 'affiliate_home' %}">Finish affiliate setup</a>
+    </div>
   {% endif %}
 {% endblock %}
