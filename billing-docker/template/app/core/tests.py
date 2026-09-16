@@ -843,7 +843,7 @@ class RegisterViewTests(TestCase):
 
 
 
-@override_settings(ALLOWED_HOSTS=["billing.example.test", "testserver"], STRIPE_TRIAL_DAYS=7)
+@override_settings(ALLOWED_HOSTS=["billing.example.test", "testserver"], STRIPE_TRIAL_DAYS=14)
 class PaywallHomeTests(TestCase):
     """Authenticated home: instance list vs blocking no-instance paywall."""
 
@@ -859,7 +859,7 @@ class PaywallHomeTests(TestCase):
         self.assertContains(r, "Create your AI instance")
         self.assertContains(r, 'id="paywall-cta"')
         self.assertContains(r, reverse("oidc_logout"))
-        self.assertContains(r, "7-day free trial")
+        self.assertContains(r, "14-day free trial")
         self.assertNotContains(r, 'aria-modal="true"')
         self.assertNotContains(r, "Your instances")
 

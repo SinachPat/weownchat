@@ -58,10 +58,12 @@ services:
       POSTGRES_PORT: "5432"
       OIDC_OP_ISSUER: https://sso.weown.id/realms/weown-chat
       OIDC_RP_CLIENT_ID: billing
-      # Authoritative trial length for this render. Do NOT also set
-      # STRIPE_TRIAL_DAYS in Infisical — `infisical run` overrides compose
-      # and would desync Stripe from the landing/billing "7-day" copy.
-      STRIPE_TRIAL_DAYS: "7"
+      # Authoritative trial length for this render — 14 is the WeOwn.Chat
+      # commercial default (copier.yaml trial_period_days, 2026-08-11 #169).
+      # Do NOT also set STRIPE_TRIAL_DAYS in Infisical — `infisical run`
+      # overrides compose and would desync Stripe from the landing/billing
+      # "14-day" copy.
+      STRIPE_TRIAL_DAYS: "14"
     volumes:
       - static_data:/app/staticfiles
       # provisioning_watch state (dedupe + the /ops/provisioning/ dead-man); NOT under

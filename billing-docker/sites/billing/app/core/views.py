@@ -1,6 +1,4 @@
 import datetime
-import time
-from urllib.parse import urlencode
 import hashlib
 import json
 import logging
@@ -12,8 +10,6 @@ from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
-from django.urls import reverse
-from django.utils.crypto import get_random_string
 from django.utils import timezone
 from mozilla_django_oidc.views import OIDCAuthenticationRequestView
 from django.views.decorators.csrf import csrf_exempt

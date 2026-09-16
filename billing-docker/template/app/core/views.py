@@ -1,6 +1,4 @@
 import datetime
-import time
-from urllib.parse import urlencode
 import hashlib
 import json
 import logging
@@ -12,8 +10,6 @@ from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
-from django.urls import reverse
-from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
@@ -691,7 +687,6 @@ def connect_payouts(request):
     return redirect(url, permanent=False)
 
 
-@login_required
 class OIDCRegistrationRequestView(OIDCAuthenticationRequestView):
     """Send a NEW customer to Keycloak's *registration* form, not its login form.
 
@@ -714,7 +709,7 @@ class OIDCRegistrationRequestView(OIDCAuthenticationRequestView):
         )
 
 
-
+@login_required
 def ops_provisioning(request):
     """Staff-only place to LOOK: the last provisioning_watch state, with a
     dead-man — a check older than 3× the cron interval is shown as STALE, so a
