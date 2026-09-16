@@ -874,7 +874,10 @@ class PaywallHomeTests(TestCase):
         self.assertContains(r, "Your instances")
         self.assertContains(r, "paywallco")
         self.assertNotContains(r, 'id="paywall-cta"')
-        self.assertNotContains(r, "paywall-overlay")
+        # Match the rendered element, not the bare class name: base.html always
+        # ships the .paywall-overlay CSS rule, so a substring check on
+        # "paywall-overlay" alone matches the stylesheet and never fails.
+        self.assertNotContains(r, 'class="paywall-overlay"')
 
 
 class TemplateCommentSafetyTests(TestCase):
