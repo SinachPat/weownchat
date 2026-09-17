@@ -11,8 +11,16 @@ interface Props {
   variant?: "primary" | "secondary" | "ghost";
   size?: "md" | "lg";
   class?: string;
+  /** When false, never open in a new tab (use for OIDC / register flows). */
+  newTab?: boolean;
 }
-const { href, variant = "primary", size = "md", class: className = "" } = Astro.props;
+const {
+  href,
+  variant = "primary",
+  size = "md",
+  class: className = "",
+  newTab,
+} = Astro.props;
 
 const base =
   "inline-flex items-center justify-center rounded-md font-semibold font-sans transition-[background-color,border-color,color,transform] duration-150 ease-[cubic-bezier(.16,1,.3,1)] active:scale-[0.98] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong";
@@ -29,13 +37,14 @@ const sizes: Record<string, string> = {
 };
 
 const isExternal = href.startsWith("http");
+const openInNewTab = newTab === false ? false : newTab === true ? true : isExternal;
 ---
 
 <a
   href={href}
   class={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
-  target={isExternal ? "_blank" : undefined}
-  rel={isExternal ? "noopener noreferrer" : undefined}
+  target={openInNewTab ? "_blank" : undefined}
+  rel={openInNewTab ? "noopener noreferrer" : undefined}
 >
   <slot />
 </a>

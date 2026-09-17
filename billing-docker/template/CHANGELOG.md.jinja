@@ -33,6 +33,9 @@ and this project adheres to [#WeOwnVer](../docs/VERSIONING_WEOWNVER.md).
 ## [Unreleased]
 
 ### Added
+
+- **Dummy-proof onboarding: Keycloak register vs sign-in + no-instance paywall (2026-09-15)** — Landing Create account hits `/register/` (alias to `oidc_registration_init` → Keycloak `/protocol/openid-connect/registrations`); Sign in stays on `/oidc/authenticate/`. After login with no instance, billing home shows a non-modal blocking overlay into `new_instance` (agreement → Stripe). Trial copy follows `STRIPE_TRIAL_DAYS` (compose sets `14`). **Deploy:** ship billing before landing; enable Keycloak user registration for the `billing` client; redirect URI `https://billing.weown.dev/oidc/callback/`. **Infisical:** do not set a conflicting `STRIPE_TRIAL_DAYS` secret — `infisical run` can override compose and desync marketing from Stripe. See `.github/ADR-007-billing-keycloak-registration-onboarding.md`.
+
 - Initial WeOwn billing service (Django + Stripe Connect + Keycloak SSO) template
 - Docker Compose setup with Caddy, Keycloak, and PostgreSQL
 - OpenTofu infrastructure configuration for DigitalOcean droplets

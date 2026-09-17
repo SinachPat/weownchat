@@ -12,7 +12,8 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
+from mozilla_django_oidc.views import OIDCAuthenticationRequestView
 
 from . import keycloak, mail, stripe_svc
 from django.db.models import Q, Sum
@@ -29,8 +30,19 @@ def healthz(request):
     return JsonResponse({"ok": True})
 
 
+@require_GET
+def register(request):
+    """Landing Create account alias → Keycloak registrations.
+
+    Prefer ``oidc_registration_init`` (/oidc/register/). ``/register/`` stays
+    so billing.weown.dev/register/ and existing landing CTAs keep working.
+    """
+    return redirect("oidc_registration_init")
+
+
+
 def home(request):
-    ctx = {}
+    ctx = {"trial_days": settings.STRIPE_TRIAL_DAYS}
     if request.user.is_authenticated:
         customer = Customer.objects.filter(user=request.user).first()
         ctx["customer"] = customer
@@ -673,3 +685,54 @@ def connect_payouts(request):
                        "error": "Could not reach Stripe just now — please try again in a moment."},
                       status=502)
     return redirect(url, permanent=False)
+
+
+class OIDCRegistrationRequestView(OIDCAuthenticationRequestView):
+    """Send a NEW customer to Keycloak's *registration* form, not its login form.
+
+    Keycloak exposes registration as a sibling of the authorization endpoint:
+    ``/protocol/openid-connect/registrations`` takes the identical query string
+    and lands on the sign-up form, then continues the same authorization-code
+    flow back to our callback. mozilla-django-oidc only knows the login
+    endpoint, so we swap it for this one view.
+
+    Without this, "Create your account" dropped a first-time visitor on the
+    login screen and asked them to find the small "Register" link themselves
+    (reported by a customer, 2026-09-03).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.OIDC_OP_AUTH_ENDPOINT = self.OIDC_OP_AUTH_ENDPOINT.replace(
+            "/protocol/openid-connect/auth",
+            "/protocol/openid-connect/registrations",
+        )
+
+
+@login_required
+def ops_provisioning(request):
+    """Staff-only place to LOOK: the last provisioning_watch state, with a
+    dead-man — a check older than 3× the cron interval is shown as STALE, so a
+    dead monitor never reads as healthy."""
+    if not (request.user.is_staff or request.user.is_superuser):
+        return HttpResponse(status=403)
+    import os as _os
+    path = getattr(settings, "OPS_STATE_FILE", "/app/state/provisioning.json")
+    try:
+        with open(path) as f:
+            state = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        return JsonResponse({"state": "STALE", "reason": f"no state file ({type(e).__name__})", "path": path}, status=503)
+    try:
+        age = timezone.now() - datetime.datetime.fromisoformat(state.get("checked_at"))
+        stale = age > datetime.timedelta(minutes=15)
+    except Exception:  # noqa: BLE001
+        age, stale = None, True
+    state.pop("trace", None)
+    state["age_seconds"] = int(age.total_seconds()) if age else None
+    if stale:
+        state["display_state"] = "STALE"
+        state["reason"] = "last check is older than 15 minutes — the monitor itself is down"
+    else:
+        state["display_state"] = state.get("state")
+    return JsonResponse(state, status=503 if stale or state.get("state") != "OK" else 200)

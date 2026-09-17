@@ -719,11 +719,15 @@ class BrandingSafetyTests(TestCase):
 
     def test_a_non_hex_colour_never_reaches_the_stylesheet(self):
         aff = _affiliate("evil", primary_color="#000")
-        # bypass validation exactly the way a bad migration or shell would
-        Affiliate.objects.filter(pk=aff.pk).update(primary_color="red;} body{display:none")
+        # bypass validation exactly the way a bad migration or shell would.
+        # The payload must FIT the varchar(7) column — Postgres rejects anything
+        # longer before the render layer is ever reached (that DataError was
+        # this test's only failure mode on a real DB). 7 chars of CSS that
+        # would close the --brand declaration and open a new rule is enough.
+        Affiliate.objects.filter(pk=aff.pk).update(primary_color="red;}b{")
         r = self.client.get(reverse("home") + "?ref=evil")
         self.assertEqual(r.context["brand"]["primary_color"], "#2563eb")
-        self.assertNotIn(b"display:none", r.content)
+        self.assertNotIn(b"red;}b{", r.content)
 
     def test_a_non_https_logo_is_dropped(self):
         aff = _affiliate("mixed")
@@ -767,3 +771,186 @@ class BrandedRenderTests(TestCase):
         r = self.client.get(reverse("home"))
         self.assertContains(r, "<title>WeOwn Billing</title>", html=False)
         self.assertNotContains(r, "Service delivered on the WeOwn platform.")
+
+
+@override_settings(
+    ALLOWED_HOSTS=["billing.example.test", "testserver"],
+    OIDC_OP_ISSUER="https://sso.example.test/realms/weown-chat",
+    OIDC_RP_CLIENT_ID="billing",
+    OIDC_USE_PKCE=False,
+    OIDC_OP_AUTHORIZATION_ENDPOINT="https://sso.example.test/realms/weown-chat/protocol/openid-connect/auth",
+)
+class RegisterViewTests(TestCase):
+    """Landing /register/ aliases to oidc_registration_init (Keycloak registrations)."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def test_register_aliases_to_oidc_registration_init(self):
+        resp = self.client.get(reverse("register"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("oidc_registration_init"))
+
+    def test_oidc_registration_init_redirects_to_keycloak_registrations(self):
+        resp = self.client.get(reverse("oidc_registration_init"))
+        self.assertEqual(resp.status_code, 302)
+        loc = resp["Location"]
+        self.assertIn("/protocol/openid-connect/registrations?", loc)
+        self.assertIn("client_id=billing", loc)
+        session = self.client.session
+        self.assertIn("oidc_states", session)
+        self.assertTrue(session["oidc_states"])
+
+    def test_authenticated_user_on_register_still_aliases(self):
+        user = User.objects.create_user(username="reguser", email="r@example.test", password="pw")
+        self.client.force_login(user)
+        resp = self.client.get(reverse("register"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("oidc_registration_init"))
+
+    def test_register_post_is_not_allowed(self):
+        resp = self.client.post(reverse("register"))
+        self.assertEqual(resp.status_code, 405)
+
+
+    @override_settings(
+        OIDC_USE_PKCE=True,
+        OIDC_OP_AUTHORIZATION_ENDPOINT="https://sso.example.test/realms/weown-chat/protocol/openid-connect/auth",
+        OIDC_RP_CLIENT_ID="billing",
+        OIDC_OP_ISSUER="https://sso.example.test/realms/weown-chat",
+    )
+    def test_oidc_registration_init_emits_pkce_challenge_and_stores_verifier(self):
+        """When PKCE is on, registrations must carry a challenge matching session verifier."""
+        from urllib.parse import urlparse, parse_qs
+        from mozilla_django_oidc.utils import generate_code_challenge
+
+        resp = self.client.get(reverse("oidc_registration_init"))
+        self.assertEqual(resp.status_code, 302)
+        loc = resp["Location"]
+        self.assertIn("/protocol/openid-connect/registrations?", loc)
+        q = parse_qs(urlparse(loc).query)
+        self.assertIn("code_challenge", q)
+        self.assertEqual(q.get("code_challenge_method", [None])[0], "S256")
+        states = self.client.session.get("oidc_states") or {}
+        self.assertTrue(states)
+        entry = next(iter(states.values()))
+        verifier = entry.get("code_verifier")
+        self.assertTrue(verifier)
+        self.assertEqual(
+            q["code_challenge"][0],
+            generate_code_challenge(verifier, "S256"),
+        )
+
+
+
+@override_settings(ALLOWED_HOSTS=["billing.example.test", "testserver"], STRIPE_TRIAL_DAYS=14)
+class PaywallHomeTests(TestCase):
+    """Authenticated home: instance list vs blocking no-instance paywall."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.customer = _customer(username="paywall", email="paywall@example.test")
+        self.client.force_login(self.user)
+
+    def test_no_instance_shows_paywall_cta_and_sign_out(self):
+        r = self.client.get(reverse("home"))
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "You don")
+        self.assertContains(r, "Create your AI instance")
+        self.assertContains(r, 'id="paywall-cta"')
+        self.assertContains(r, reverse("oidc_logout"))
+        self.assertContains(r, "14-day free trial")
+        self.assertNotContains(r, 'aria-modal="true"')
+        self.assertNotContains(r, "Your instances")
+
+    def test_with_instance_shows_list_not_paywall(self):
+        Instance.objects.create(
+            customer=self.customer,
+            subdomain="paywallco",
+            status=Instance.Status.ACTIVE,
+        )
+        r = self.client.get(reverse("home"))
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "Your instances")
+        self.assertContains(r, "paywallco")
+        self.assertNotContains(r, 'id="paywall-cta"')
+        # Match the rendered element, not the bare class name: base.html always
+        # ships the .paywall-overlay CSS rule, so a substring check on
+        # "paywall-overlay" alone matches the stylesheet and never fails.
+        self.assertNotContains(r, 'class="paywall-overlay"')
+
+
+class TemplateCommentSafetyTests(TestCase):
+    """Django's {# #} is single-line; a wrapped one is emitted verbatim to customers."""
+
+    def test_home_never_leaks_template_comments(self):
+        for path in ("/", "/?ref=nobody"):
+            r = Client().get(path)
+            self.assertNotIn(b"{#", r.content, f"template comment leaked on {path}")
+            self.assertNotIn(b"#}", r.content)
+
+    def test_no_unclosed_single_line_comment_in_any_template(self):
+        import os
+        base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        bad = []
+        for root, _, files in os.walk(base):
+            for f in files:
+                if f.endswith((".html", ".txt")) and "templates" in root:
+                    for n, line in enumerate(open(os.path.join(root, f), encoding="utf-8"), 1):
+                        if "{#" in line and "#}" not in line:
+                            bad.append(f"{f}:{n}")
+        self.assertEqual(bad, [], f"unclosed {{# on its line (Django comments are single-line): {bad}")
+class ProvisioningWatchTests(TestCase):
+    """The three states are distinct: a failed read must never look like an empty queue."""
+
+    def test_unreadable_is_not_ok(self):
+        from core.management.commands import provisioning_watch as pw
+        with mock.patch.object(pw, "read_queue", side_effect=RuntimeError("db gone")):
+            r = pw.classify(15)
+        self.assertEqual(r["state"], "UNREADABLE")
+        self.assertIn("db gone", r["error"])
+
+    def test_empty_readable_is_ok(self):
+        from core.management.commands import provisioning_watch as pw
+        self.assertEqual(pw.classify(15)["state"], "OK")
+
+
+class PruneDemoDataTests(TestCase):
+    """Demo rows in a production DB brand the customer funnel; pruning them must
+    be dry-run by default and must never touch a code with customers behind it."""
+
+    def _run(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command("prune_demo_data", *args, stdout=out)
+        return out.getvalue()
+
+    def test_dry_run_changes_nothing(self):
+        aff = _affiliate("demo-brand", display_name="BrandDemo Co")
+        out = self._run("--codes", "demo-brand")
+        self.assertIn("would deactivate", out)
+        aff.refresh_from_db()
+        self.assertTrue(aff.active)
+
+    def test_apply_deactivates(self):
+        aff = _affiliate("chatdemo")
+        self._run("--codes", "chatdemo", "--apply")
+        aff.refresh_from_db()
+        self.assertFalse(aff.active)
+
+    def test_a_code_with_referrals_is_never_touched(self):
+        aff = _affiliate("weown-partner")
+        user = get_user_model().objects.create_user("ref-cust", email="c@example.test")
+        Customer.objects.create(user=user, referred_by=aff)
+        out = self._run("--codes", "weown-partner", "--apply")
+        self.assertIn("KEPT", out)
+        aff.refresh_from_db()
+        self.assertTrue(aff.active)
+
+    def test_restore_reactivates(self):
+        aff = _affiliate("weown-demo")
+        self._run("--codes", "weown-demo", "--apply")
+        self._run("--codes", "weown-demo", "--apply", "--restore")
+        aff.refresh_from_db()
+        self.assertTrue(aff.active)
