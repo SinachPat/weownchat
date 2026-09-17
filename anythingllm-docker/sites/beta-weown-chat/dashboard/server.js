@@ -926,9 +926,27 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── private chat (proxied; customer never talks to ALLM directly) ──
-    // Optional `thread` (an ALLM thread slug) scopes the conversation; without
-    // it the workspace's default conversation is used — full back-compat.
+    // Every message goes to a THREAD. A request without `thread` gets a new one
+    // (returned as `thread`) and is never written to the workspace's shared
+    // default conversation: that conversation sends its last N turns with every
+    // question, so unrelated earlier chats leak into the answer (weown-fleet#55).
     const threadSlugOk = (s) => /^[a-z0-9][a-z0-9-]{0,64}$/i.test(String(s || ''));
+    // Explicit unique slug instead of letting ALLM derive one from `name`.
+    // Thread names come from the first message actually sent (deriveTitle()
+    // client-side), so two different conversations easily share a name —
+    // e.g. two chats both opening with "How much revenue have we
+    // generated?". A name-derived slug would then resolve to the SAME
+    // existing thread instead of creating a new one, silently merging one
+    // conversation's history into another rather than stacking a new entry.
+    const createThread = async (name) => {
+      const slug = `t-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+      const r = await allm('POST', `/api/v1/workspace/${WS.private}/thread/new`, {
+        body: { slug, name: String(name || '').slice(0, 80) || `Conversation ${new Date().toISOString().slice(0, 10)}` },
+        headers: { 'content-type': 'application/json' },
+      });
+      const t = r.json && r.json.thread;
+      return t ? { slug: t.slug, name: t.name } : { error: (r.json && (r.json.message || r.json.error)) || r.status };
+    };
     if (p === '/api/chat' && req.method === 'POST') {
       // Larger body cap: optional base64 attachments ride on this JSON (ALLM
       // chat attachments API — mime application/anythingllm-document).
@@ -939,9 +957,12 @@ const server = http.createServer(async (req, res) => {
       const msg = String(message || '').trim()
         || (att.attachments ? 'Please review the attached file(s).' : '');
       if (!msg) return send(res, 400, { error: 'message required' });
-      const chatPath = thread
-        ? `/api/v1/workspace/${WS.private}/thread/${thread}/chat`
-        : `/api/v1/workspace/${WS.private}/chat`;
+      let created = null;
+      if (!thread) {
+        created = await createThread(msg.slice(0, 60));
+        if (created.error) return send(res, 502, { error: 'could not start the conversation', detail: created.error });
+      }
+      const chatPath = `/api/v1/workspace/${WS.private}/thread/${thread || created.slug}/chat`;
       const chatBody = { message: msg, mode: 'chat' };
       if (att.attachments) chatBody.attachments = att.attachments;
       const r = await allm('POST', chatPath, { body: chatBody, headers: { 'content-type': 'application/json' } });
@@ -949,7 +970,9 @@ const server = http.createServer(async (req, res) => {
       // upstream error string — the UI renders {text} as a normal bot bubble.
       if (r.status !== 200 || !(r.json && r.json.textResponse))
         return send(res, 502, { error: (r.json && (r.json.error || r.json.message)) || 'the assistant is unavailable right now' });
-      return send(res, 200, { text: stripThink(r.json.textResponse), sources: (r.json.sources || []).map((s) => s.title).slice(0, 5) });
+      const out = { text: stripThink(r.json.textResponse), sources: (r.json.sources || []).map((s) => s.title).slice(0, 5) };
+      if (created) out.thread = created;
+      return send(res, 200, out);
     }
 
     // ── private chat threads (list / create / history / delete) ──
@@ -962,21 +985,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/threads' && req.method === 'POST') {
       const { name } = await readBody(req);
-      // Explicit unique slug instead of letting ALLM derive one from `name`.
-      // Thread names come from the first message actually sent (deriveTitle()
-      // client-side), so two different conversations easily share a name —
-      // e.g. two chats both opening with "How much revenue have we
-      // generated?". A name-derived slug would then resolve to the SAME
-      // existing thread instead of creating a new one, silently merging one
-      // conversation's history into another rather than stacking a new entry.
-      const slug = `t-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
-      const r = await allm('POST', `/api/v1/workspace/${WS.private}/thread/new`, {
-        body: { slug, name: String(name || '').slice(0, 80) || `Conversation ${new Date().toISOString().slice(0, 10)}` },
-        headers: { 'content-type': 'application/json' },
-      });
-      const t = r.json && r.json.thread;
-      if (!t) return send(res, 502, { error: 'could not create the conversation', detail: (r.json && (r.json.message || r.json.error)) || r.status });
-      return send(res, 200, { slug: t.slug, name: t.name });
+      const t = await createThread(name);
+      if (t.error) return send(res, 502, { error: 'could not create the conversation', detail: t.error });
+      return send(res, 200, t);
     }
     {
       const tm = p.match(/^\/api\/threads\/([A-Za-z0-9-]{1,64})\/(chats|delete|rename)$/);
