@@ -46,6 +46,14 @@ when the two have come apart:
     ../sites/dev-weown-anythingllm/prompts/public.md
 ```
 
+## Not for fleet-registry tenants
+
+Tenants in `WeOwnDev/weown-fleet`'s `tenants.yaml` (e.g. `beta-weown-chat`) already
+have managed, versioned prompts — `prompts/ws-{public,private}.tmpl` rendered and
+applied by `apply-product-config.sh`. On those, `diff` is fine for drift detection;
+`push` would fight the fleet script. Use this convention only for the sites in this
+repo that the registry does not manage.
+
 ## Why this instance first
 
 `dev-weown-anythingllm` is the lowest-risk target to prove the mechanism

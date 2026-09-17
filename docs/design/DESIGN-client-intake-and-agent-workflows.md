@@ -100,7 +100,7 @@ already built.**
 | Client (unauthenticated) upload | ❌ Missing | Phase 4.1 |
 | "Client" as an entity, with notes | ❌ Missing | Phase 4.4 |
 | Agent-triggered workflows | ❌ Missing | Phase 4.6 |
-| Version-controlled system prompts | ⚠️ Mechanism only, no content synced yet | Phase 1 |
+| Version-controlled system prompts | ⚠️ **Fleet tenants: already built** — `weown-fleet` `prompts/ws-{public,private}.tmpl`, versioned marker, applied by `apply-product-config.sh`. This repo's own sites: mechanism only, no content synced yet | Phase 1 |
 
 None of the built capabilities are vertical-specific. The foundation is already
 general; only the *content* loaded into it is domain-shaped.
@@ -110,6 +110,7 @@ general; only the *content* loaded into it is domain-shaped.
 ## 4. Non-negotiable constraints
 
 ### C1 — Client documents must never reach the public workspace
+
 `WS_PUBLIC_SLUG` grounds the public chat widget. Any document embedded there becomes
 retrievable context for *any anonymous visitor* — one client's document answerable
 to the next stranger. Severity scales with vertical (financial records, privileged
@@ -121,25 +122,30 @@ action. Highest-severity failure mode in this plan, and easy to hit by accident
 because the *existing* upload path ingests straight into the library.
 
 ### C2 — `embed-filter` holds no secrets, ever
+
 It sits in front of the AOP's public widget so an internal credential failure cannot
 take their website down. Upload handling needs storage credentials. **Upload
 handling does not go in `embed-filter`.**
 
 ### C3 — The current upload policy assumes an authenticated uploader
+
 `server.js`: *"The uploader is the authenticated PRACTICE OWNER uploading their OWN
 grounding [documents]"*, under a `locked-down release` header. Phase 4 deliberately
 reopens that assumption — explicitly, with compensating controls, not silently.
 
 ### C4 — System prompt contents are not secret-safe
+
 Reproduced live 2026-09-01: unauthenticated `POST /api/embed/<id>/stream-chat`
 returned 1,445 characters of reasoning quoting the workspace system prompt verbatim.
 Assume anything in the public prompt is disclosable.
 
 ### C5 — Repo hygiene
+
 Public repo. No real customer URLs, emails, PII, private IPs. Secrets via Infisical.
 Branches match `^(feature|fix|docs|hotfix)/[a-z0-9]{2,}-[a-z0-9]{3,}(-[a-z0-9]+)*$`.
 
 ### C6 — No build may hardcode a vertical
+
 Sources, disclaimer wording, document types, referral language are per-instance
 config. A `tax`-shaped conditional in shared code is a defect.
 
@@ -186,6 +192,11 @@ everything around it is strict IaC. Phase 0 makes six changes to an artifact wit
 review, no CI, no rollback, no drift detection. It compounds per vertical: four
 verticals means four hand-maintained prompt pairs and no way to diff them.
 
+- **Registry tenants are already covered**: `weown-fleet` renders per-tenant
+  prompts from versioned templates (`prompts/ws-{public,private}.tmpl`, a
+  `[weown-chat prompt vN …]` marker) and `apply-product-config.sh --apply`
+  re-stamps them. Phase 1 here is for the sites in *this* repo that the
+  registry does not manage; do not build a second template system for tenants.
 - Store: `sites/<name>/prompts/{public,private}.md`
 - Shared base + per-vertical overlay, so **C6 is structurally enforced**
 - Apply: a `scripts/` helper in the style of `allm-admin-account.sh`, run by a
@@ -306,6 +317,7 @@ contract, an advisory client sends statements. Built domain-neutral it is the
 product's core capability, not a tax feature. Document types are already config.
 
 #### 4.0 Client-facing intake portal · **M** · NEW — does not exist
+
 Confirmed: there is no portal today, nor any third-party one to link to. We build it.
 
 - **Host it on the instance**, on a path or subdomain Caddy already terminates TLS
@@ -317,6 +329,7 @@ Confirmed: there is no portal today, nor any third-party one to link to. We buil
 - Per C6, branding and vertical copy are per-instance config.
 
 #### 4.1 Tokenised upload service · **M**
+
 **Not** in `embed-filter` (C2). Either a new container or a narrowly scoped public
 route on the dashboard — noting the latter gives the dashboard an unauthenticated
 attack surface it does not have today, a threat-model change to decide consciously.
@@ -327,12 +340,14 @@ attack surface it does not have today, a threat-model change to decide conscious
 - Malware scanning before anything is stored
 
 #### 4.2 Quarantine storage · **M**
+
 Per **C1**, the load-bearing control. Encrypted at rest, **outside any workspace
 document library**, not embedded, not indexed, unreachable by any agent until
 promoted. DO Spaces already used for backups, S3-compatible — reuse. Retention and
 deletion defined up front; obligations differ by vertical and are config.
 
 #### 4.3 AOP notification · **S** (after 3.2)
+
 **Send a link, not an attachment.** Deliberate change to the thread's spec.
 
 Emailing a sensitive client document puts it in an inbox, auto-forwards, phone syncs,
@@ -342,14 +357,17 @@ and in regulated verticals it is the specific thing the regime prohibits.
 Notification plus authenticated dashboard link is safer *and* less work.
 
 #### 4.4 Dashboard: clients, documents, notes · **L**
+
 Genuinely new — no client/contact model exists. Client record, linked documents,
 notes, promote-to-private-workspace action. Multi-tenancy is simple: each AOP has
 their own droplet, so clients are always one practice's.
 
 #### 4.5 Booking handoff · **S**
+
 Configured `BOOKING_URL`. Prefill parameters possible but add coupling — defer.
 
 #### 4.6 Agent trigger · **M** — see §6 probe
+
 Detect intent with the model; **execute deterministically**. The model classifies
 "this person wants to send a document"; the widget renders a real UI card with the
 tokenised link and booking button.
@@ -398,6 +416,7 @@ sharp consequence worth stating plainly:
 > and changed only through review — today it can be changed like any other setting.
 
 **Verification tasks** (none are code):
+
 1. Enumerate which upstream providers the pinned models actually route to
 2. Confirm zero-retention / no-training terms in writing for each
 3. Pin `OPENROUTER_MODEL_PREF` to that verified set; document the constraint

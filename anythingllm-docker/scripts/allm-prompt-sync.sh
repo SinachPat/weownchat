@@ -13,13 +13,18 @@
 # would show it. This script is the seam: PULL bootstraps a committed copy
 # from a live instance, DIFF detects drift, PUSH applies a reviewed change.
 #
-# FIELD NAME IS UNCONFIRMED AGAINST THIS DEPLOYMENT. AnythingLLM's documented
-# workspace-update contract uses `openAiPrompt` as the system-prompt field on
-# `POST /api/v1/workspace/:slug/update`, regardless of the configured
-# provider (legacy naming) — but no AnythingLLM source is vendored in this
-# repo to verify that against, and API surfaces do change between releases.
-# Run `discover` FIRST, on every new instance, before trusting `pull`/`push`.
+# FIELD NAME: `openAiPrompt` on `POST /api/v1/workspace/:slug/update` — the
+# same field weown-fleet's `lib-product.sh` reads and writes on live tenants
+# (verified against the pinned 1.9.x API, 2026-09). The name is legacy and
+# provider-independent. API surfaces still change between releases, so run
+# `discover` FIRST on any instance running a different AnythingLLM version.
 # `discover` is a plain GET — it can never modify the workspace.
+#
+# SCOPE: this is for the sites in THIS repo (dev-weown-anythingllm,
+# ai.weown.agency, s004.ccc.bot). Tenants in the weown-fleet registry already
+# have managed, versioned prompts (`prompts/ws-{public,private}.tmpl`, applied
+# by `apply-product-config.sh`) — use that there, or `diff` here to detect
+# drift against it; do not `push` over a fleet-managed prompt.
 #
 # The admin API key is read with `read -rs` and travels
 # operator's terminal -> curl's Authorization header only. It is never an
@@ -73,8 +78,11 @@ printf 'AnythingLLM admin API key for %s (hidden): ' "$ALLM_URL" >&2
 read -rs API_KEY; echo >&2
 [[ -n "$API_KEY" ]] || { echo "ERROR: empty key" >&2; exit 1; }
 
-RESP="$(mktemp -t allm-prompt-sync)"
+RESP="$(mktemp "${TMPDIR:-/tmp}/allm-prompt-sync.XXXXXX")"
 trap 'rm -f "$RESP"' EXIT
+
+# jq path to the workspace object, whichever shape the API returned.
+WS='((.workspace | if type=="array" then .[0] else . end) // {})'
 
 fetch_workspace() {
   local http_code
@@ -87,10 +95,10 @@ fetch_workspace() {
     cat "$RESP" >&2
     exit 1
   fi
-  # AnythingLLM returns { "workspace": [ {...} ] } — an ARRAY even for one
-  # workspace (verified server-side precedent in template/dashboard/server.js,
-  # dashboard's own `allm()` caller notes this exact shape at line ~421).
-  if ! jq -e '(.workspace // [{}])[0]' "$RESP" > /dev/null 2>&1; then
+  # AnythingLLM returns { "workspace": [ {...} ] } on 1.9.x (an ARRAY even for
+  # one workspace) and a bare object on some builds — WS() accepts both, the
+  # same way weown-fleet's lib-product.sh does.
+  if ! jq -e "$WS" "$RESP" > /dev/null 2>&1; then
     echo "ERROR: unexpected response shape from GET /api/v1/workspace/${SLUG}:" >&2
     cat "$RESP" >&2
     exit 1
@@ -101,7 +109,7 @@ fetch_workspace() {
 # never silently writes an empty/null prompt over a real one.
 extract_prompt() {
   local prompt
-  prompt="$(jq -e -r '(.workspace // [{}])[0].openAiPrompt // empty' "$RESP")" || {
+  prompt="$(jq -e -r "$WS"' | .openAiPrompt // empty' "$RESP")" || {
     echo "ERROR: no 'openAiPrompt' field on this workspace object — run 'discover' and update this script for the field this AnythingLLM version actually uses" >&2
     exit 1
   }
@@ -112,7 +120,7 @@ case "$MODE" in
   discover)
     fetch_workspace
     echo "Workspace object keys on this instance (confirm the prompt field before using pull/push):" >&2
-    jq -r '(.workspace // [{}])[0] | to_entries[] | "  \(.key): \(.value | tostring | gsub("\n"; "\\n") | if length > 60 then .[0:60] + "..." else . end)"' "$RESP" >&2
+    jq -r "$WS"' | to_entries[] | "  \(.key): \(.value | tostring | gsub("\n"; "\\n") | if length > 60 then .[0:60] + "..." else . end)"' "$RESP" >&2
     ;;
 
   pull)
@@ -124,10 +132,10 @@ case "$MODE" in
 
   diff)
     fetch_workspace
-    LIVE="$(mktemp -t allm-prompt-live)"
+    LIVE="$(mktemp "${TMPDIR:-/tmp}/allm-prompt-live.XXXXXX")"
     trap 'rm -f "$RESP" "$LIVE"' EXIT
     extract_prompt > "$LIVE"
-    if diff -u "$FILE" "$LIVE" >&2; then
+    if diff -u <(printf '%s' "$(cat "$FILE")") "$LIVE" >&2; then
       echo "No drift: '${SLUG}' matches ${FILE}" >&2
     else
       echo "DRIFT DETECTED on '${SLUG}' — live prompt does not match ${FILE}" >&2
@@ -138,13 +146,13 @@ case "$MODE" in
   push)
     [[ -f "$FILE" ]] || { echo "ERROR: ${FILE} not found" >&2; exit 1; }
     fetch_workspace
-    LIVE="$(mktemp -t allm-prompt-live)"
-    PAYLOAD="$(mktemp -t allm-prompt-payload)"
+    LIVE="$(mktemp "${TMPDIR:-/tmp}/allm-prompt-live.XXXXXX")"
+    PAYLOAD="$(mktemp "${TMPDIR:-/tmp}/allm-prompt-payload.XXXXXX")"
     trap 'rm -f "$RESP" "$LIVE" "$PAYLOAD"' EXIT
     extract_prompt > "$LIVE"
 
     echo "--- live (current) vs. ${FILE} (about to apply) ---" >&2
-    diff -u "$LIVE" "$FILE" >&2 || true
+    diff -u "$LIVE" <(printf '%s' "$(cat "$FILE")") >&2 || true
     printf "\nApply the above change to workspace '%s' on %s? Type YES to confirm: " "$SLUG" "$ALLM_URL" >&2
     read -r CONFIRM
     [[ "$CONFIRM" == "YES" ]] || { echo "Aborted — nothing changed." >&2; exit 1; }
@@ -152,7 +160,10 @@ case "$MODE" in
     # jq -Rs slurps the file as raw text into a single JSON string — the safe
     # way to carry arbitrary quotes/newlines/backslashes into a JSON payload
     # without hand-built escaping.
-    jq -Rs '{openAiPrompt: .}' "$FILE" > "$PAYLOAD"
+    # rtrimstr: `pull` writes the prompt without a trailing newline and every
+    # editor adds one — without this, push writes that newline into the live
+    # prompt and every later `diff` reports drift that is not there.
+    jq -Rs '{openAiPrompt: (. | rtrimstr("\n"))}' "$FILE" > "$PAYLOAD"
 
     http_code="$(curl -sS -o "$RESP" -w '%{http_code}' \
       -X POST \
