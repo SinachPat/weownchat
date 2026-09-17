@@ -5,9 +5,16 @@ from core import views
 
 urlpatterns = [
     path("healthz", views.healthz),
+    path("ops/provisioning/", views.ops_provisioning, name="ops_provisioning"),
     path("admin/", admin.site.urls),
+    path(
+        "oidc/register/",
+        views.OIDCRegistrationRequestView.as_view(),
+        name="oidc_registration_init",
+    ),
     path("oidc/", include("mozilla_django_oidc.urls")),
     path("", views.home, name="home"),
+    path("register/", views.register, name="register"),
     path("subscribe/", views.subscribe, name="subscribe"),
     path("agreement/", views.customer_agreement, name="customer_agreement"),
     path("instances/new/", views.new_instance, name="new_instance"),

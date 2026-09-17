@@ -16,7 +16,8 @@
 // (sha256 hex of the customer password), DASHBOARD_SESSION_SECRET.
 // Optional env: DASHBOARD_CUSTOMER_EMAIL, WS_PUBLIC_SLUG, WS_PRIVATE_SLUG,
 // EMBED_ID, EMBED_ALLOWLIST_DOMAINS, PUBLIC_DOMAIN, ALLM_URL, PORT, BASE_PATH,
-// DASHBOARD_STATE_DIR, UPLOAD_ALLOWED_EXT, UPLOAD_MAX_BYTES.
+// DASHBOARD_STATE_DIR, UPLOAD_ALLOWED_EXT, UPLOAD_MAX_BYTES, ALLM_DOCUMENTS_PATH
+// (read-only mount of ALLM's storage/documents dir — powers full text previews).
 'use strict';
 const http = require('http');
 const https = require('https');
@@ -123,10 +124,11 @@ const writeLocked = (set) => {
 };
 
 // Serialize every read-modify-write of the lock file and every
-// check-then-purge, so two concurrent document operations can't clobber each
-// other's lock change, nor let a just-locked document slip through a purge that
+// check-then-delete, so two concurrent document operations can't clobber each
+// other's lock change, nor let a just-locked document slip through a delete that
 // already read the old state (Copilot review, PR #141). Single tenant, so
 // contention is rare — but the lock is a safety control and must be race-free.
+// Scope toggles also use this mutex for orderly embedding updates; they never purge.
 let _docOpChain = Promise.resolve();
 const withDocLock = (fn) => {
   const run = _docOpChain.then(fn, fn);
@@ -134,13 +136,85 @@ const withDocLock = (fn) => {
   return run;
 };
 
+// Shared docpath guard for library ops. Paths are opaque ALLM locations
+// (e.g. "custom-documents/foo.json") — never absolute, never traversal.
+const isValidDocpath = (docpath) => {
+  const s = String(docpath || '');
+  if (!s || s.length > 512) return false;
+  if (s.startsWith('/') || s.includes('..') || s.includes('\0') || s.includes('\\')) return false;
+  return true;
+};
+
+// Storage names look like "AI-Playbook-MEGA.pdf-<uuid>.json"; display titles
+// are usually the original filename. Normalise both sides so a duplicate check
+// and a preview subtitle never leak the internal …-<uuid>.json storage name.
+const stripUuidJsonSuffix = (name) => String(name || '')
+  .replace(/-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i, '');
+const normalizeDisplayTitle = (name) => {
+  const base = path.basename(String(name || '').trim());
+  return stripUuidJsonSuffix(base).trim().toLowerCase();
+};
+const displayTitlesMatch = (a, b) => {
+  const na = normalizeDisplayTitle(a);
+  const nb = normalizeDisplayTitle(b);
+  return !!na && !!nb && na === nb;
+};
+const humanTitleFromDocpath = (docpath) => {
+  const base = path.basename(String(docpath || ''));
+  return stripUuidJsonSuffix(base) || base || 'Document';
+};
+
+// Optional path to ALLM's storage/documents directory (the same volume the ALLM
+// container writes, bind-mounted read-only into this container — see the
+// dashboard service in docker/compose.prod.yaml). Mintplex
+// GET /api/v1/document/:docName runs findDocumentInDocuments, which deliberately
+// strips pageContent, so the API alone can never power a text preview. When this
+// is set we read the stored JSON directly, ONLY under this root, with
+// path-traversal guards and a hard byte cap — we never invent paths.
+const ALLM_DOCUMENTS_PATH = (process.env.ALLM_DOCUMENTS_PATH || '').trim();
+// Cap the on-disk read itself, before the bytes enter the heap. The preview is
+// truncated to 100k chars anyway, so a JSON larger than this cap cannot improve
+// the preview — it can only be an OOM lever for an authenticated caller.
+const DOC_DISK_READ_MAX_BYTES = 16 * 1024 * 1024;
+const isWithinDir = (root, candidate) => {
+  const rel = path.relative(path.resolve(root), path.resolve(candidate));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+};
+const readDocJsonFromDisk = (docpath) => {
+  if (!ALLM_DOCUMENTS_PATH || !isValidDocpath(docpath)) return null;
+  try {
+    const root = path.resolve(ALLM_DOCUMENTS_PATH);
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) return null;
+    const full = path.resolve(root, docpath);
+    if (!isWithinDir(root, full)) return null;
+    if (!full.toLowerCase().endsWith('.json')) return null;
+    const st = fs.statSync(full);
+    if (!st.isFile()) return null;
+    if (st.size > DOC_DISK_READ_MAX_BYTES) {
+      console.error('[dashboard] document disk read skipped: file over cap', st.size);
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(full, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (e) {
+    console.error('[dashboard] document disk read failed:', e.message);
+    return null;
+  }
+};
+
 // ── upload policy (locked-down release) ──────────────────────────────────────
 // The uploader is the authenticated PRACTICE OWNER uploading their OWN grounding
-// documents (service guide, fee schedule, Q&A sheet) — per the PRD the supported
-// set is PDF / Markdown / plain text / CSV. End-customer document intake is NOT
-// this endpoint: the public bot redirects those to the practice's own portal.
-// Anything outside the allowlist is refused BEFORE a byte reaches AnythingLLM.
-const UPLOAD_ALLOWED_EXT = (process.env.UPLOAD_ALLOWED_EXT || 'pdf,md,markdown,txt,csv')
+// documents (service guide, fee schedule, Q&A sheet) — supported set is
+// PDF / Markdown / plain text / CSV / Word .docx (AnythingLLM collector asDocx).
+// Legacy Word 97-2003 (.doc) is refused with a convert message. End-customer
+// document intake is NOT this endpoint: the public bot redirects those to the
+// practice's own portal. Anything outside the allowlist is refused BEFORE a
+// byte reaches AnythingLLM.
+// Fleet note: if Infisical sets UPLOAD_ALLOWED_EXT, it MUST include docx (and
+// any other types the UI should offer) or Word uploads will 400 at the server
+// even when the browser accept= list includes them. GET /api/upload-policy
+// exposes the effective list so the UI can stay honest.
+const UPLOAD_ALLOWED_EXT = (process.env.UPLOAD_ALLOWED_EXT || 'pdf,md,markdown,txt,csv,docx')
   .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const UPLOAD_MAX_BYTES = parseInt(process.env.UPLOAD_MAX_BYTES || String(25 * 1024 * 1024), 10);
 // Filename arrives in the X-Upload-Filename header (the dashboard sets it) so we can
@@ -154,6 +228,9 @@ const extOf = (name) => {
 const uploadRejection = (name, len) => {
   const ext = extOf(name);
   if (!name) return 'missing filename (X-Upload-Filename)';
+  if (ext === 'doc') {
+    return 'Word 97-2003 (.doc) isn\'t supported — save it as .docx or PDF, then upload.';
+  }
   if (!ext || !UPLOAD_ALLOWED_EXT.includes(ext)) {
     return `file type ".${ext || '?'}" is not accepted — allowed: ${UPLOAD_ALLOWED_EXT.join(', ')}`;
   }
@@ -281,16 +358,80 @@ const page = (name) => fs.readFileSync(path.join(__dirname, 'public', name), 'ut
 // text leaves this server: live replies and stored history.
 const stripThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-const readBody = (req) => new Promise((r) => {
-  // These endpoints carry tiny JSON (a docpath and a couple of flags). Cap the
-  // buffer so an authenticated client can't grow the process heap with a huge
-  // body; over the cap we stop reading and resolve empty, which the handlers'
-  // own validation then rejects as a 400 (Copilot review, PR #141).
-  let d = '', len = 0, over = false;
-  req.on('data', (c) => { len += c.length; if (over) return; if (len > 262144) { over = true; d = ''; req.destroy(); return; } d += c; });
-  req.on('end', () => { try { r(JSON.parse(d || '{}')); } catch { r({}); } });
-  req.on('error', () => r({}));
+// Default 256 KiB for tiny JSON (docpath + flags). /api/chat may carry
+// base64 chat attachments — use readBody(req, CHAT_BODY_MAX_BYTES) there.
+const READ_BODY_DEFAULT_MAX = 262144;
+const parsePositiveInt = (raw, fallback) => {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+const CHAT_ATTACH_MAX = 3;
+const CHAT_ATTACH_MAX_B64 = parsePositiveInt(process.env.CHAT_ATTACH_MAX_B64, 4 * 1024 * 1024); // ~3 MiB raw
+// The body cap must be able to CARRY a full attachment set, or the limits
+// contradict each other: readBody destroys the socket, the client's fetch
+// rejects, and the customer is told "could not reach the server" for two
+// ordinary PDFs. Derive it from the attachment budget so the two cannot drift
+// apart again; an explicit env value still wins, but never below the budget.
+const CHAT_BODY_FLOOR = CHAT_ATTACH_MAX * CHAT_ATTACH_MAX_B64 + 512 * 1024; // + room for text/JSON overhead
+const CHAT_BODY_MAX_BYTES = Math.max(
+  parsePositiveInt(process.env.CHAT_BODY_MAX_BYTES, 6 * 1024 * 1024),
+  CHAT_BODY_FLOOR,
+);
+const CHAT_ATTACH_DATA_MIMES = new Set([
+  'application/pdf', 'text/plain', 'text/csv', 'text/markdown', 'text/x-markdown',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+]);
+const readBody = (req, maxBytes = READ_BODY_DEFAULT_MAX) => new Promise((r) => {
+  // Cap the buffer so an authenticated client can't grow the process heap with
+  // a huge body; over the cap we stop reading and resolve empty, which the
+  // handlers' own validation then rejects as a 400 (Copilot review, PR #141).
+  // destroy() may only emit 'close' (not 'error'/'end') — always settle.
+  let d = '', len = 0, over = false, settled = false;
+  const done = (val) => { if (settled) return; settled = true; r(val); };
+  req.on('data', (c) => {
+    len += c.length; if (over) return;
+    if (len > maxBytes) { over = true; d = ''; req.destroy(); return; }
+    d += c;
+  });
+  req.on('end', () => { try { done(JSON.parse(d || '{}')); } catch { done({}); } });
+  req.on('error', () => done({}));
+  req.on('close', () => { if (over || !settled) done({}); });
 });
+// Sanitize ALLM chat attachments (Mintplex #4797): non-image docs MUST use
+// mime application/anythingllm-document + a data:…;base64,… contentString.
+// We never invent attachments — only forward allowlisted client payloads.
+const sanitizeChatAttachments = (raw) => {
+  if (raw == null) return { ok: true, attachments: undefined };
+  if (!Array.isArray(raw)) return { ok: false, error: 'attachments must be an array' };
+  if (raw.length > CHAT_ATTACH_MAX) return { ok: false, error: `at most ${CHAT_ATTACH_MAX} attachments per message` };
+  const out = [];
+  for (const a of raw) {
+    if (!a || typeof a !== 'object') return { ok: false, error: 'invalid attachment' };
+    const name = String(a.name || '').trim();
+    const mime = String(a.mime || '').trim();
+    const contentString = String(a.contentString || '');
+    const reject = uploadRejection(name, null);
+    if (reject) return { ok: false, error: reject };
+    if (mime !== 'application/anythingllm-document') {
+      return { ok: false, error: 'attachment mime must be application/anythingllm-document' };
+    }
+    const m = /^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(contentString);
+    if (!m) {
+      return { ok: false, error: 'attachment contentString must be a data:…;base64,… URI' };
+    }
+    const dataMime = m[1].trim().toLowerCase();
+    if (!CHAT_ATTACH_DATA_MIMES.has(dataMime)) {
+      return { ok: false, error: `attachment data type "${dataMime}" is not accepted` };
+    }
+    const b64 = m[2].replace(/\s+/g, '');
+    if (!b64 || b64.length > CHAT_ATTACH_MAX_B64) {
+      return { ok: false, error: `attachment "${name}" is too large` };
+    }
+    // Re-normalize so upstream always gets a clean data URI.
+    out.push({ name, mime, contentString: `data:${dataMime};base64,${b64}` });
+  }
+  return { ok: true, attachments: out.length ? out : undefined };
+};
 
 // Health means "a customer can use this", not "this process is alive". Every
 // dashboard action goes to AnythingLLM, so with the app down the dashboard is a
@@ -409,27 +550,76 @@ const server = http.createServer(async (req, res) => {
 
     // ── documents: one shared library, not two separate uploads. A document
     // is independently on/off for each workspace (adds/deletes via
-    // update-embeddings); "the library" is just the union of what's embedded
-    // in WS.private and WS.public — every upload attaches to at least one of
-    // them immediately (see X-Upload-Scope below), so nothing is ever
-    // orphaned in the system store with no scope pointing at it. This reuses
-    // only ALLM calls already proven by the pre-redesign per-scope endpoints
-    // (workspace GET, update-embeddings adds/deletes, system remove-documents)
-    // — no new/unverified ALLM surface for this feature. ──
+    // update-embeddings). The library is the union of what's embedded in
+    // WS.private and WS.public PLUS any system-store files not currently
+    // scoped to either (so operators can re-toggle scopes after turning both
+    // off). Turning a scope off only detaches embeddings — it never purges
+    // the file. Explicit purge lives only on POST /api/documents/delete.
+    // Reuses ALLM workspace GET, update-embeddings, system documents list,
+    // and (delete only) remove-documents. ──
     const docsOf = async (scope) => {
       const r = await allm('GET', `/api/v1/workspace/${WS[scope]}`);
       // Verified against a live ALLM (2026-08-05): GET /api/v1/workspace/<slug>
       // returns { workspace: [ { ..., documents: [] } ] } — `workspace` is an
       // ARRAY, and even an EMPTY workspace includes `documents: []`. So a 200
       // that does NOT yield a documents array is an UNEXPECTED shape, never a
-      // legitimate "no documents". Return ok:false there, so the destructive
-      // orphan-purge in the scope handler fails loud instead of deleting a
-      // document that may in fact still be embedded in the other workspace
-      // (Copilot review, PR #141).
+      // legitimate "no documents". Return ok:false there so callers that need
+      // to know whether the other workspace still has a doc (e.g. UI messaging)
+      // fail loud instead of guessing (Copilot review, PR #141).
       const wsList = (r.json || {}).workspace;
       const ws = Array.isArray(wsList) ? wsList[0] : wsList;
       const docs = ws && Array.isArray(ws.documents) ? ws.documents : null;
       return { ok: r.status === 200 && docs !== null, docs: docs || [] };
+    };
+    // Flat view of the library — the same private + public + system-store union
+    // GET /api/documents builds, reduced to what the replace-on-upload path
+    // needs: { path, name, locked }. Kept beside docsOf so both handlers share
+    // one source of truth for "what is in the library".
+    const mergedLibrary = async () => {
+      const [priv, pub] = await Promise.all([docsOf('private'), docsOf('public')]);
+      const locked = readLocked();
+      const nameOf = (d) => {
+        if (!d.metadata) return humanTitleFromDocpath(d.docpath);
+        try { return JSON.parse(d.metadata).title || humanTitleFromDocpath(d.docpath); }
+        catch { return humanTitleFromDocpath(d.docpath); }
+      };
+      const byPath = new Map();
+      const add = (dp, nm) => { if (dp && !byPath.has(dp)) byPath.set(dp, { path: dp, name: nm, locked: locked.has(dp) }); };
+      priv.docs.forEach((d) => add(d.docpath, nameOf(d)));
+      pub.docs.forEach((d) => add(d.docpath, nameOf(d)));
+      try {
+        const sys = await allm('GET', '/api/v1/documents');
+        const root = sys.json && sys.json.localFiles;
+        const flatten = (items, parentFolder) => {
+          if (!Array.isArray(items)) return;
+          for (const item of items) {
+            if (!item) continue;
+            if (item.type === 'folder' || Array.isArray(item.items)) {
+              const folderName = item.name
+                ? (parentFolder ? `${parentFolder}/${item.name}` : item.name)
+                : parentFolder || '';
+              flatten(item.items || [], folderName);
+              continue;
+            }
+            const fn = item.name || item.title || '';
+            if (!fn || fn.includes('..') || fn.includes('/') || fn.includes('\\')) continue;
+            const dp = parentFolder ? `${parentFolder}/${fn}` : fn;
+            if (!isValidDocpath(dp)) continue;
+            let title = item.title || fn;
+            if (item.metadata) {
+              try {
+                const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata;
+                if (meta && meta.title) title = meta.title;
+              } catch { /* keep title */ }
+            }
+            add(dp, title);
+          }
+        };
+        if (sys.status === 200 && root) flatten(root.items || [], '');
+      } catch (e) {
+        console.error('[dashboard] merged library: system documents list error:', e.message);
+      }
+      return [...byPath.values()];
     };
     if (p === '/api/documents' && req.method === 'GET') {
       const [priv, pub] = await Promise.all([docsOf('private'), docsOf('public')]);
@@ -450,11 +640,136 @@ const server = http.createServer(async (req, res) => {
         if (existing) existing.public = true;
         else byPath.set(d.docpath, { id: d.id, path: d.docpath, name: nameOf(d), private: false, public: true, locked: locked.has(d.docpath) });
       });
+      // Also surface system-store files that aren't embedded in either
+      // workspace (private:false, public:false) so turning both scopes off
+      // never hides a document from the library — operators can re-toggle.
+      // Failure here must not 502 the whole list (workspace docs still useful).
+      try {
+        const sys = await allm('GET', '/api/v1/documents');
+        const root = sys.json && sys.json.localFiles;
+        const flatten = (items, parentFolder) => {
+          if (!Array.isArray(items)) return;
+          for (const item of items) {
+            if (!item) continue;
+            const isFolder = item.type === 'folder' || Array.isArray(item.items);
+            if (isFolder) {
+              // Append — do not replace — or nested paths collapse and miss
+              // workspace docpath matches (custom-documents/harbor/qa.json).
+              const folderName = item.name
+                ? (parentFolder ? `${parentFolder}/${item.name}` : item.name)
+                : parentFolder || '';
+              flatten(item.items || [], folderName);
+              continue;
+            }
+            // File items: workspace docs use docpath like "custom-documents/foo.json"
+            const fname = item.name || item.title || '';
+            if (!fname || fname.includes('..') || fname.includes('/') || fname.includes('\\')) continue;
+            const docpath = parentFolder ? `${parentFolder}/${fname}` : fname;
+            if (!isValidDocpath(docpath)) continue;
+            if (byPath.has(docpath)) continue;
+            let title = item.title || fname;
+            if (item.metadata) {
+              try {
+                const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata;
+                if (meta && meta.title) title = meta.title;
+              } catch { /* keep title */ }
+            }
+            byPath.set(docpath, {
+              id: item.id || docpath,
+              path: docpath,
+              name: title,
+              private: false,
+              public: false,
+              locked: locked.has(docpath),
+            });
+          }
+        };
+        if (sys.status === 200 && root) flatten(root.items || [], '');
+        else if (sys.status !== 200) console.error('[dashboard] system documents list failed:', sys.status);
+      } catch (e) {
+        console.error('[dashboard] system documents list error:', e.message);
+      }
       return send(res, 200, { documents: [...byPath.values()] });
+    }
+
+    if (p === '/api/upload-policy' && req.method === 'GET') {
+      // Effective allowlist (env UPLOAD_ALLOWED_EXT overrides the default).
+      // UI should mirror this so fleet Infisical overrides do not lie to users.
+      return send(res, 200, {
+        allowedExt: UPLOAD_ALLOWED_EXT.slice(),
+        maxBytes: UPLOAD_MAX_BYTES,
+        legacyDocHint: 'Word 97-2003 (.doc) isn\'t supported — save it as .docx or PDF, then upload.',
+      });
+    }
+
+    if (p === '/api/documents/content' && req.method === 'GET') {
+      const docpath = (url.searchParams.get('path') || '').trim();
+      if (!docpath) return send(res, 400, { error: 'path required' });
+      if (!isValidDocpath(docpath)) return send(res, 400, { error: 'invalid path' });
+      // ALLM GET /v1/document/:docName looks up by filename inside each storage
+      // folder (not by full "folder/file" location). Full docpaths 404; basename
+      // can hit the wrong folder when two files share a name. Fetch by basename,
+      // then require metadata.location (when present) to match the requested path.
+      const tryFetch = async (name) => allm('GET', `/api/v1/document/${encodeURIComponent(name)}`);
+      const base = path.basename(docpath);
+      let r = await tryFetch(base || docpath);
+      if (r.status === 404) return send(res, 404, { error: 'document not found' });
+      if (r.status !== 200 || !r.json) {
+        console.error('[dashboard] document content failed:', r.status, (r.json && r.json.error) || '');
+        return send(res, 502, { error: 'could not load document content' });
+      }
+      const j = r.json;
+      // ALLM shapes vary: sometimes { pageContent, title, name }, sometimes nested under document
+      const doc = j.document || j;
+      const norm = (s) => String(s || '').trim().replace(/^\/+/, '');
+      const loc = norm(doc.location || doc.docpath || '');
+      const reqPath = norm(docpath);
+      // Only hard-fail when ALLM returns a folder-qualified location that
+      // disagrees with the requested path. A bare filename (or missing
+      // location) cannot prove the folder — do not 409 on that, or normal
+      // previews of custom-documents/file.json break when location is basename-only.
+      if (loc.includes('/') && loc !== reqPath) {
+        // Folders only — document filenames are customer content, and on hosts
+        // running the fleet log agent these lines leave the box unredacted.
+        const dirOf = (x) => { const i = String(x).lastIndexOf('/'); return i < 0 ? '(root)' : String(x).slice(0, i); };
+        console.error('[dashboard] document content location mismatch:', { requestedDir: dirOf(reqPath), gotDir: dirOf(loc) });
+        return send(res, 409, {
+          error: 'Another document shares this file name in a different folder — rename one, then open it again.',
+        });
+      }
+      let pageContent = doc.pageContent || doc.text || doc.content || '';
+      if (typeof pageContent !== 'string') pageContent = String(pageContent || '');
+      // Mintplex strips pageContent from the document API response, so for most
+      // real files the block above yields ''. Fall back to the stored JSON on
+      // the shared volume when ALLM_DOCUMENTS_PATH is configured.
+      let disk = null;
+      if (!pageContent) {
+        disk = readDocJsonFromDisk(docpath);
+        if (disk) {
+          const fromDisk = disk.pageContent || disk.text || disk.content || '';
+          pageContent = typeof fromDisk === 'string' ? fromDisk : String(fromDisk || '');
+        }
+      }
+      const MAX = 100000;
+      if (pageContent.length > MAX) pageContent = pageContent.slice(0, MAX) + '\n\n… [truncated]';
+      // Never surface the internal …-<uuid>.json storage basename — prefer the
+      // stored title, then ALLM's title, then a de-suffixed filename.
+      const title = (disk && disk.title) || doc.title || humanTitleFromDocpath(docpath);
+      const name = title;
+      // When there is still no text, tell the client WHY so it can show an
+      // honest note instead of an alarming "could not load" error: an
+      // unconfigured instance is an ops gap, not a per-document failure.
+      const previewUnavailable = pageContent ? null
+        : (ALLM_DOCUMENTS_PATH ? 'no-extracted-text' : 'not-configured');
+      // Report the location ALLM actually gave us. Echoing the REQUESTED path
+      // when ALLM returned none would assert a match we never made — and the
+      // client uses this to decide what it is looking at.
+      return send(res, 200, { name, title, pageContent, previewUnavailable, location: loc || null, locationVerified: !!loc });
     }
     if (p === '/api/documents/lock' && req.method === 'POST') {
       const { docpath, locked: wantLocked } = await readBody(req);
       if (!docpath) return send(res, 400, { error: 'docpath required' });
+      if (!isValidDocpath(docpath)) return send(res, 400, { error: 'invalid path' });
       // Same boolean discipline as /api/documents/scope's `on` — a malformed
       // `locked` must not be coerced into an accidental unlock (or, e.g., a
       // truthy string like "false" into an accidental lock)
@@ -479,10 +794,28 @@ const server = http.createServer(async (req, res) => {
       // any byte reaches AnythingLLM.
       const fname = req.headers['x-upload-filename'] || '';
       const scope = req.headers['x-upload-scope'] === 'public' ? 'public' : 'private';
+      const onDup = String(req.headers['x-upload-on-duplicate'] || 'keep').trim().toLowerCase() === 'replace'
+        ? 'replace' : 'keep';
       const reject = uploadRejection(fname, req.headers['content-length']);
       if (reject) {
         req.resume(); // drain so the client gets the response instead of a reset
         return send(res, 400, { error: reject });
+      }
+      // Replace-on-duplicate is UPLOAD → VERIFY → DELETE, never delete-first:
+      // the customer must never be left with nothing because a fresh upload
+      // failed after the old copy was already gone. The only work done here,
+      // before the upload, is a locked-doc pre-check — so a doomed replace
+      // fails fast instead of wasting the transfer. The client sends only the
+      // header; it does NOT pre-delete (that would double the destructive work).
+      let replaceTargets = [];
+      if (onDup === 'replace') {
+        const lib = await mergedLibrary();
+        replaceTargets = lib.filter((d) => displayTitlesMatch(fname, d.name) || displayTitlesMatch(fname, d.path));
+        const lockedHit = replaceTargets.find((d) => d.locked);
+        if (lockedHit) {
+          req.resume();
+          return send(res, 409, { error: `Unlock ${lockedHit.name} first` });
+        }
       }
       // Enforce the byte cap on the live stream too — content-length may be absent
       // or untrue; this kills the transfer the moment it exceeds the limit.
@@ -501,34 +834,52 @@ const server = http.createServer(async (req, res) => {
       if (!loc) return send(res, 502, { error: 'upload failed', detail: (up.json && up.json.error) || up.status });
       const emb = await allm('POST', `/api/v1/workspace/${WS[scope]}/update-embeddings`, { body: { adds: [loc] }, headers: { 'content-type': 'application/json' } });
       if (emb.status !== 200) return send(res, 502, { error: 'uploaded but embedding failed', detail: (emb.json && emb.json.error) || emb.status });
-      return send(res, 200, { ok: true, location: loc, scope });
+      // New file is up and embedded — NOW retire the old copies. A failure here
+      // is reported, never swallowed: the new document already replaced the old
+      // in every practical sense, so this is a warning on a 200, not a 5xx, but
+      // the customer is told exactly what was left behind.
+      let replaced = 0;
+      const replaceWarnings = [];
+      if (onDup === 'replace') {
+        const dirOf = (x) => { const i = String(x).lastIndexOf('/'); return i < 0 ? '(root)' : String(x).slice(0, i); };
+        for (const m of replaceTargets) {
+          if (m.path === loc) continue; // never delete the file we just wrote
+          const out = await withDocLock(async () => {
+            if (readLocked().has(m.path)) return { warn: `"${m.name}" was locked mid-upload — the old copy was kept` };
+            const detaches = await Promise.all(['private', 'public'].map((s) =>
+              allm('POST', `/api/v1/workspace/${WS[s]}/update-embeddings`, { body: { deletes: [m.path] }, headers: { 'content-type': 'application/json' } })
+            ));
+            if (detaches.some((d) => d.status !== 200)) {
+              console.error('[dashboard] replace-delete detach failed in', dirOf(m.path));
+              return { warn: `could not fully detach the previous "${m.name}" — it may still be embedded in one chat` };
+            }
+            const rm = await allm('DELETE', '/api/v1/system/remove-documents', { body: { names: [m.path] }, headers: { 'content-type': 'application/json' } });
+            if (rm.status !== 200) {
+              console.error('[dashboard] replace-delete remove-documents failed:', rm.status, 'in', dirOf(m.path));
+              return { warn: `removed the previous "${m.name}" from every chat, but it is still in storage` };
+            }
+            const s = readLocked(); if (s.delete(m.path)) writeLocked(s);
+            return { ok: true };
+          });
+          if (out && out.ok) replaced += 1;
+          else if (out && out.warn) replaceWarnings.push(out.warn);
+        }
+      }
+      return send(res, 200, { ok: true, location: loc, scope, replaced, replaceWarnings });
     }
     if (p === '/api/documents/scope' && req.method === 'POST') {
       const { docpath, scope, on } = await readBody(req);
       if (!docpath || (scope !== 'private' && scope !== 'public')) return send(res, 400, { error: 'docpath and scope required' });
+      if (!isValidDocpath(docpath)) return send(res, 400, { error: 'invalid path' });
       // A missing/malformed `on` must not be silently treated as "off" and
       // detach a document nobody asked to detach (Copilot review, PR #141).
       if (typeof on !== 'boolean') return send(res, 400, { error: 'on must be true or false' });
-      const otherScope = scope === 'private' ? 'public' : 'private';
-      // Turning this scope off can leave the document embedded in NEITHER
-      // workspace — invisible to /api/documents yet still in ALLM's system
-      // store: an orphan this UI can never reach again. The whole decision
-      // (would-it-orphan? → lock guard → embed change → purge) runs under the
-      // mutex so a concurrent lock can't slip between the check and the purge
-      // (Copilot review, PR #141).
+      // Scope toggles only add/remove embeddings for this workspace. Turning
+      // the last scope off leaves the file in ALLM's system store (still listed
+      // by GET /api/documents via the system documents merge). Hard-delete /
+      // purge is ONLY on POST /api/documents/delete — never here. Lock does
+      // not gate scope toggles (lock only blocks delete).
       const out = await withDocLock(async () => {
-        let orphansIt = false;
-        if (!on) {
-          const other = await docsOf(otherScope);
-          // If we can't reliably read the other workspace we cannot tell whether
-          // this orphans the document; silently guessing "no" would skip BOTH
-          // the lock guard AND the purge. Fail loud instead (Copilot review).
-          if (!other.ok) return { code: 502, body: { error: `could not verify ${otherScope} before updating ${scope} — try again` } };
-          orphansIt = !other.docs.some((d) => d.docpath === docpath);
-        }
-        if (orphansIt && readLocked().has(docpath)) {
-          return { code: 409, body: { error: 'this document is locked and this is its last active scope — unlock it first' } };
-        }
         const op = on ? 'adds' : 'deletes';
         const emb = await allm('POST', `/api/v1/workspace/${WS[scope]}/update-embeddings`, { body: { [op]: [docpath] }, headers: { 'content-type': 'application/json' } });
         if (emb.status !== 200) {
@@ -537,13 +888,6 @@ const server = http.createServer(async (req, res) => {
           console.error('[dashboard] scope update failed:', scope, emb.status, (emb.json && emb.json.error) || '');
           return { code: 502, body: { error: `could not update ${scope}` } };
         }
-        if (orphansIt) {
-          // Embedded nowhere now — purge from the system store instead of
-          // leaving an invisible leak, then drop any stale lock so the lock set
-          // doesn't accumulate dead docpaths (Copilot review, PR #141).
-          await allm('DELETE', '/api/v1/system/remove-documents', { body: { names: [docpath] }, headers: { 'content-type': 'application/json' } }).catch(() => null);
-          const s = readLocked(); if (s.delete(docpath)) writeLocked(s);
-        }
         return { code: 200, body: { ok: true } };
       });
       return send(res, out.code, out.body);
@@ -551,6 +895,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/documents/delete' && req.method === 'POST') {
       const { docpath } = await readBody(req);
       if (!docpath) return send(res, 400, { error: 'docpath required' });
+      if (!isValidDocpath(docpath)) return send(res, 400, { error: 'invalid path' });
       // Server-side is the real gate, not just the disabled button — the same
       // invariant as every other guard in this file (CSRF header, upload
       // allowlist, non-emptyable allowed-websites list).
@@ -581,22 +926,53 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── private chat (proxied; customer never talks to ALLM directly) ──
-    // Optional `thread` (an ALLM thread slug) scopes the conversation; without
-    // it the workspace's default conversation is used — full back-compat.
+    // Every message goes to a THREAD. A request without `thread` gets a new one
+    // (returned as `thread`) and is never written to the workspace's shared
+    // default conversation: that conversation sends its last N turns with every
+    // question, so unrelated earlier chats leak into the answer (weown-fleet#55).
     const threadSlugOk = (s) => /^[a-z0-9][a-z0-9-]{0,64}$/i.test(String(s || ''));
+    // Explicit unique slug instead of letting ALLM derive one from `name`.
+    // Thread names come from the first message actually sent (deriveTitle()
+    // client-side), so two different conversations easily share a name —
+    // e.g. two chats both opening with "How much revenue have we
+    // generated?". A name-derived slug would then resolve to the SAME
+    // existing thread instead of creating a new one, silently merging one
+    // conversation's history into another rather than stacking a new entry.
+    const createThread = async (name) => {
+      const slug = `t-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+      const r = await allm('POST', `/api/v1/workspace/${WS.private}/thread/new`, {
+        body: { slug, name: String(name || '').slice(0, 80) || `Conversation ${new Date().toISOString().slice(0, 10)}` },
+        headers: { 'content-type': 'application/json' },
+      });
+      const t = r.json && r.json.thread;
+      return t ? { slug: t.slug, name: t.name } : { error: (r.json && (r.json.message || r.json.error)) || r.status };
+    };
     if (p === '/api/chat' && req.method === 'POST') {
-      const { message, thread } = await readBody(req);
-      if (!message) return send(res, 400, { error: 'message required' });
+      // Larger body cap: optional base64 attachments ride on this JSON (ALLM
+      // chat attachments API — mime application/anythingllm-document).
+      const { message, thread, attachments: rawAtt } = await readBody(req, CHAT_BODY_MAX_BYTES);
       if (thread && !threadSlugOk(thread)) return send(res, 400, { error: 'bad thread' });
-      const chatPath = thread
-        ? `/api/v1/workspace/${WS.private}/thread/${thread}/chat`
-        : `/api/v1/workspace/${WS.private}/chat`;
-      const r = await allm('POST', chatPath, { body: { message, mode: 'chat' }, headers: { 'content-type': 'application/json' } });
+      const att = sanitizeChatAttachments(rawAtt);
+      if (!att.ok) return send(res, 400, { error: att.error });
+      const msg = String(message || '').trim()
+        || (att.attachments ? 'Please review the attached file(s).' : '');
+      if (!msg) return send(res, 400, { error: 'message required' });
+      let created = null;
+      if (!thread) {
+        created = await createThread(msg.slice(0, 60));
+        if (created.error) return send(res, 502, { error: 'could not start the conversation', detail: created.error });
+      }
+      const chatPath = `/api/v1/workspace/${WS.private}/thread/${thread || created.slug}/chat`;
+      const chatBody = { message: msg, mode: 'chat' };
+      if (att.attachments) chatBody.attachments = att.attachments;
+      const r = await allm('POST', chatPath, { body: chatBody, headers: { 'content-type': 'application/json' } });
       // An upstream failure must be an error, not a 200 whose "text" is the raw
       // upstream error string — the UI renders {text} as a normal bot bubble.
       if (r.status !== 200 || !(r.json && r.json.textResponse))
         return send(res, 502, { error: (r.json && (r.json.error || r.json.message)) || 'the assistant is unavailable right now' });
-      return send(res, 200, { text: stripThink(r.json.textResponse), sources: (r.json.sources || []).map((s) => s.title).slice(0, 5) });
+      const out = { text: stripThink(r.json.textResponse), sources: (r.json.sources || []).map((s) => s.title).slice(0, 5) };
+      if (created) out.thread = created;
+      return send(res, 200, out);
     }
 
     // ── private chat threads (list / create / history / delete) ──
@@ -609,21 +985,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/threads' && req.method === 'POST') {
       const { name } = await readBody(req);
-      // Explicit unique slug instead of letting ALLM derive one from `name`.
-      // Thread names come from the first message actually sent (deriveTitle()
-      // client-side), so two different conversations easily share a name —
-      // e.g. two chats both opening with "How much revenue have we
-      // generated?". A name-derived slug would then resolve to the SAME
-      // existing thread instead of creating a new one, silently merging one
-      // conversation's history into another rather than stacking a new entry.
-      const slug = `t-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
-      const r = await allm('POST', `/api/v1/workspace/${WS.private}/thread/new`, {
-        body: { slug, name: String(name || '').slice(0, 80) || `Conversation ${new Date().toISOString().slice(0, 10)}` },
-        headers: { 'content-type': 'application/json' },
-      });
-      const t = r.json && r.json.thread;
-      if (!t) return send(res, 502, { error: 'could not create the conversation', detail: (r.json && (r.json.message || r.json.error)) || r.status });
-      return send(res, 200, { slug: t.slug, name: t.name });
+      const t = await createThread(name);
+      if (t.error) return send(res, 502, { error: 'could not create the conversation', detail: t.error });
+      return send(res, 200, t);
     }
     {
       const tm = p.match(/^\/api\/threads\/([A-Za-z0-9-]{1,64})\/(chats|delete|rename)$/);
