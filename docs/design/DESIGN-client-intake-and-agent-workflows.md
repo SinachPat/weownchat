@@ -100,7 +100,7 @@ already built.**
 | Client (unauthenticated) upload | ❌ Missing | Phase 4.1 |
 | "Client" as an entity, with notes | ❌ Missing | Phase 4.4 |
 | Agent-triggered workflows | ❌ Missing | Phase 4.6 |
-| Version-controlled system prompts | ⚠️ **Fleet tenants: already built** — `weown-fleet` `prompts/ws-{public,private}.tmpl`, versioned marker, applied by `apply-product-config.sh`. Missing only for this repo's own sites | Phase 1 |
+| Version-controlled system prompts | ⚠️ **Fleet tenants: already built** — `weown-fleet` `prompts/ws-{public,private}.tmpl`, versioned marker, applied by `apply-product-config.sh`. This repo's own sites: mechanism only, no content synced yet | Phase 1 |
 
 None of the built capabilities are vertical-specific. The foundation is already
 general; only the *content* loaded into it is domain-shaped.
@@ -199,8 +199,8 @@ verticals means four hand-maintained prompt pairs and no way to diff them.
   registry does not manage; do not build a second template system for tenants.
 - Store: `sites/<name>/prompts/{public,private}.md`
 - Shared base + per-vertical overlay, so **C6 is structurally enforced**
-- Apply: extend `template/ansible/deploy.yml.jinja`, or a `scripts/` helper in the
-  style of `allm-admin-account.sh`
+- Apply: a `scripts/` helper in the style of `allm-admin-account.sh`, run by a
+  human holding the admin key — not wired into `deploy.yml.jinja` yet (see status)
 - Drift detection: compare live vs committed; report, don't auto-fix
 
 **Acceptance**: prompt changes require a PR; `deploy.sh` makes live match committed;
@@ -208,6 +208,24 @@ fleet drift is detectable from a script.
 
 **Before Phase 3**: the gap loop writes to the KB. Adding an automated writer to an
 unversioned artifact compounds the problem.
+
+**Status (this PR)**: ships the mechanism only —
+[`scripts/allm-prompt-sync.sh`](../../anythingllm-docker/scripts/allm-prompt-sync.sh)
+(`discover` / `pull` / `diff` / `push`, admin key via `read -rs`, never through an
+agent) and the convention scaffolding for `dev-weown-anythingllm`, the lowest-risk
+target. **No prompt content is committed yet** — bootstrapping requires the live
+admin key, which per `AGENTS.md` must be run by a human, not an agent; see that
+site's `prompts/README.md` for the exact steps. Deliberately **not** wired into
+`deploy.yml.jinja` in this pass: the mechanism needs to prove itself against one
+live instance first. Extending the convention to the other three sites
+(`ai.weown.agency`, `beta-weown-chat`, `s004.ccc.bot`) and wiring drift-checking
+into deploy are follow-up changes once this is proven.
+
+**One assumption this script makes and cannot verify from this repo**: AnythingLLM's
+system-prompt field is `openAiPrompt` on `POST /api/v1/workspace/:slug/update`, per
+AnythingLLM's documented API — no AnythingLLM source is vendored here to confirm it
+against. The script's `discover` mode is a read-only GET built specifically to
+verify this before `pull`/`push` are trusted on a real instance.
 
 ---
 
