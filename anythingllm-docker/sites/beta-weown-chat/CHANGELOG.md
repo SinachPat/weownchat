@@ -7,6 +7,17 @@ and this project adheres to [#WeOwnVer](https://github.com/WeOwnNetwork/ai/blob/
 
 ---
 
+## [Unreleased] — private chat no longer shares one conversation
+
+### Fixed
+
+- **Dashboard private chat wrote every message into the workspace's shared default conversation** ([weown-fleet#55](https://github.com/WeOwnDev/weown-fleet/issues/55)). The page opened on "Main conversation", and a send without a thread went to `/api/v1/workspace/<private>/chat`, which carries the last 20 turns of that shared history into each answer. Measured on a live instance on 2026-09-17: a customer-style test question was answered with a document list drawn from months-old unrelated test chats, naming files not loaded in the workspace.
+  - `server.js`: `/api/chat` without `thread` now creates a new thread, answers inside it and returns it as `thread`. Nothing is written to the default conversation any more.
+  - `index.html`: the dashboard opens on a new conversation. "Main conversation" stays readable, and sending from it starts a new conversation.
+  - Existing default-conversation history is left untouched; clearing it on a live instance is a separate, owner-approved step.
+
+---
+
 ## [Unreleased] — embed reasoning-leak filter
 
 ### Added

@@ -1064,7 +1064,9 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     currentMessages = d.history || [];
     renderChat();
   }
-  document.getElementById('btn-new-convo').addEventListener('click',function(){
+  // quiet: page load, or a send from "Main conversation" — keep queued
+  // attachments, don't move focus or the drawer; the caller renders next.
+  function startNewConversation(quiet){
     draft=true;
     activeThread=null;
     viewSeq++;
@@ -1072,12 +1074,14 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     renderConvos();
     document.getElementById('convo-title').textContent='New conversation';
     showChatError('');
+    if(quiet) return;
     pendingAttaches=[]; renderPendingAttaches();
     renderChat();
     closeDrawer();
     var input=document.getElementById('msg-input');
     if(input) input.focus();
-  });
+  }
+  document.getElementById('btn-new-convo').addEventListener('click',function(){ startNewConversation(false); });
 
   // ── chat rendering ──────────────────────────────────────────────────────
   function showChatError(msg, ok){
@@ -1612,6 +1616,11 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     try{ await doSend(text); } finally { sendInFlight=false; }
   }
   async function doSend(text){
+    // "Main conversation" is the workspace's shared default thread: it sends its
+    // last turns with every question, so unrelated earlier chats leak into the
+    // answer (weown-fleet#55). It stays readable, but a send from it starts a
+    // new conversation instead of adding to it.
+    if(!draft && !activeThread) startNewConversation(true);
     showChatError('');
     currentMessages.push({role:'user',text:text});
     renderChat();
@@ -2059,7 +2068,8 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
   loadDocs();
   loadDomains();
   loadSnippet();
-  loadThreads().then(function(){ switchThread(''); });
+  // Open on a fresh conversation, not the shared default one (weown-fleet#55).
+  loadThreads().then(function(){ startNewConversation(true); renderChat(); });
 })();
 </script>
 </body></html>
