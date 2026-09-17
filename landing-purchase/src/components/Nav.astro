@@ -26,10 +26,10 @@ const links = [
     </nav>
 
     <div class="flex items-center gap-3">
-      <a href="https://billing.weown.dev" class="hidden text-[15px] text-text-mut transition-colors hover:text-text sm:inline">
+      <a href="https://billing.weown.dev/oidc/authenticate/" class="hidden text-[15px] text-text-mut transition-colors hover:text-text sm:inline">
         Sign in
       </a>
-      <Button href="https://billing.weown.dev" size="md">Get started</Button>
+      <Button href="https://billing.weown.dev/register/" size="md" newTab={false}>Create account</Button>
       <button
         type="button"
         id="nav-menu-btn"
@@ -58,8 +58,13 @@ const links = [
         </li>
       ))}
       <li>
-        <a href="https://billing.weown.dev" class="block rounded-sm px-2 py-2.5 text-[15px] text-text-mut hover:bg-surface-2 hover:text-text">
+        <a href="https://billing.weown.dev/oidc/authenticate/" class="block rounded-sm px-2 py-2.5 text-[15px] text-text-mut hover:bg-surface-2 hover:text-text">
           Sign in
+        </a>
+      </li>
+      <li class="pt-2">
+        <a href="https://billing.weown.dev/register/" class="nav-mobile-link block rounded-sm bg-accent px-3 py-2.5 text-center text-[15px] font-semibold text-white hover:opacity-95">
+          Create account
         </a>
       </li>
     </ul>

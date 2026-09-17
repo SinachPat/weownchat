@@ -12,7 +12,8 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
+from mozilla_django_oidc.views import OIDCAuthenticationRequestView
 
 from . import keycloak, mail, stripe_svc
 from django.db.models import Q, Sum
@@ -29,8 +30,19 @@ def healthz(request):
     return JsonResponse({"ok": True})
 
 
+@require_GET
+def register(request):
+    """Landing Create account alias → Keycloak registrations.
+
+    Prefer ``oidc_registration_init`` (/oidc/register/). ``/register/`` stays
+    so billing.weown.dev/register/ and existing landing CTAs keep working.
+    """
+    return redirect("oidc_registration_init")
+
+
+
 def home(request):
-    ctx = {}
+    ctx = {"trial_days": settings.STRIPE_TRIAL_DAYS}
     if request.user.is_authenticated:
         customer = Customer.objects.filter(user=request.user).first()
         ctx["customer"] = customer
@@ -673,6 +685,28 @@ def connect_payouts(request):
                        "error": "Could not reach Stripe just now — please try again in a moment."},
                       status=502)
     return redirect(url, permanent=False)
+
+
+class OIDCRegistrationRequestView(OIDCAuthenticationRequestView):
+    """Send a NEW customer to Keycloak's *registration* form, not its login form.
+
+    Keycloak exposes registration as a sibling of the authorization endpoint:
+    ``/protocol/openid-connect/registrations`` takes the identical query string
+    and lands on the sign-up form, then continues the same authorization-code
+    flow back to our callback. mozilla-django-oidc only knows the login
+    endpoint, so we swap it for this one view.
+
+    Without this, "Create your account" dropped a first-time visitor on the
+    login screen and asked them to find the small "Register" link themselves
+    (reported by a customer, 2026-09-03).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.OIDC_OP_AUTH_ENDPOINT = self.OIDC_OP_AUTH_ENDPOINT.replace(
+            "/protocol/openid-connect/auth",
+            "/protocol/openid-connect/registrations",
+        )
 
 
 @login_required

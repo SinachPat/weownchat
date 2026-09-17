@@ -773,6 +773,113 @@ class BrandedRenderTests(TestCase):
         self.assertNotContains(r, "Service delivered on the WeOwn platform.")
 
 
+@override_settings(
+    ALLOWED_HOSTS=["billing.example.test", "testserver"],
+    OIDC_OP_ISSUER="https://sso.example.test/realms/weown-chat",
+    OIDC_RP_CLIENT_ID="billing",
+    OIDC_USE_PKCE=False,
+    OIDC_OP_AUTHORIZATION_ENDPOINT="https://sso.example.test/realms/weown-chat/protocol/openid-connect/auth",
+)
+class RegisterViewTests(TestCase):
+    """Landing /register/ aliases to oidc_registration_init (Keycloak registrations)."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def test_register_aliases_to_oidc_registration_init(self):
+        resp = self.client.get(reverse("register"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("oidc_registration_init"))
+
+    def test_oidc_registration_init_redirects_to_keycloak_registrations(self):
+        resp = self.client.get(reverse("oidc_registration_init"))
+        self.assertEqual(resp.status_code, 302)
+        loc = resp["Location"]
+        self.assertIn("/protocol/openid-connect/registrations?", loc)
+        self.assertIn("client_id=billing", loc)
+        session = self.client.session
+        self.assertIn("oidc_states", session)
+        self.assertTrue(session["oidc_states"])
+
+    def test_authenticated_user_on_register_still_aliases(self):
+        user = User.objects.create_user(username="reguser", email="r@example.test", password="pw")
+        self.client.force_login(user)
+        resp = self.client.get(reverse("register"))
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("oidc_registration_init"))
+
+    def test_register_post_is_not_allowed(self):
+        resp = self.client.post(reverse("register"))
+        self.assertEqual(resp.status_code, 405)
+
+
+    @override_settings(
+        OIDC_USE_PKCE=True,
+        OIDC_OP_AUTHORIZATION_ENDPOINT="https://sso.example.test/realms/weown-chat/protocol/openid-connect/auth",
+        OIDC_RP_CLIENT_ID="billing",
+        OIDC_OP_ISSUER="https://sso.example.test/realms/weown-chat",
+    )
+    def test_oidc_registration_init_emits_pkce_challenge_and_stores_verifier(self):
+        """When PKCE is on, registrations must carry a challenge matching session verifier."""
+        from urllib.parse import urlparse, parse_qs
+        from mozilla_django_oidc.utils import generate_code_challenge
+
+        resp = self.client.get(reverse("oidc_registration_init"))
+        self.assertEqual(resp.status_code, 302)
+        loc = resp["Location"]
+        self.assertIn("/protocol/openid-connect/registrations?", loc)
+        q = parse_qs(urlparse(loc).query)
+        self.assertIn("code_challenge", q)
+        self.assertEqual(q.get("code_challenge_method", [None])[0], "S256")
+        states = self.client.session.get("oidc_states") or {}
+        self.assertTrue(states)
+        entry = next(iter(states.values()))
+        verifier = entry.get("code_verifier")
+        self.assertTrue(verifier)
+        self.assertEqual(
+            q["code_challenge"][0],
+            generate_code_challenge(verifier, "S256"),
+        )
+
+
+
+@override_settings(ALLOWED_HOSTS=["billing.example.test", "testserver"], STRIPE_TRIAL_DAYS=14)
+class PaywallHomeTests(TestCase):
+    """Authenticated home: instance list vs blocking no-instance paywall."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.customer = _customer(username="paywall", email="paywall@example.test")
+        self.client.force_login(self.user)
+
+    def test_no_instance_shows_paywall_cta_and_sign_out(self):
+        r = self.client.get(reverse("home"))
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "You don")
+        self.assertContains(r, "Create your AI instance")
+        self.assertContains(r, 'id="paywall-cta"')
+        self.assertContains(r, reverse("oidc_logout"))
+        self.assertContains(r, "14-day free trial")
+        self.assertNotContains(r, 'aria-modal="true"')
+        self.assertNotContains(r, "Your instances")
+
+    def test_with_instance_shows_list_not_paywall(self):
+        Instance.objects.create(
+            customer=self.customer,
+            subdomain="paywallco",
+            status=Instance.Status.ACTIVE,
+        )
+        r = self.client.get(reverse("home"))
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "Your instances")
+        self.assertContains(r, "paywallco")
+        self.assertNotContains(r, 'id="paywall-cta"')
+        # Match the rendered element, not the bare class name: base.html always
+        # ships the .paywall-overlay CSS rule, so a substring check on
+        # "paywall-overlay" alone matches the stylesheet and never fails.
+        self.assertNotContains(r, 'class="paywall-overlay"')
+
+
 class TemplateCommentSafetyTests(TestCase):
     """Django's {# #} is single-line; a wrapped one is emitted verbatim to customers."""
 

@@ -13,7 +13,7 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from mozilla_django_oidc.views import OIDCAuthenticationRequestView
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from . import keycloak, mail, stripe_svc
 from django.db.models import Q, Sum
@@ -29,9 +29,19 @@ log = logging.getLogger(__name__)
 def healthz(request):
     return JsonResponse({"ok": True})
 
+@require_GET
+def register(request):
+    """Landing Create account alias → Keycloak registrations.
+
+    Prefer ``oidc_registration_init`` (/oidc/register/). ``/register/`` stays
+    so billing.weown.dev/register/ and existing landing CTAs keep working.
+    """
+    return redirect("oidc_registration_init")
+
+
 
 def home(request):
-    ctx = {}
+    ctx = {"trial_days": settings.STRIPE_TRIAL_DAYS}
     if request.user.is_authenticated:
         customer = Customer.objects.filter(user=request.user).first()
         ctx["customer"] = customer

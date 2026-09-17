@@ -67,6 +67,9 @@ services:
       # being sold) stays a secret-managed value, so pointing this deployment at
       # a $5 drill product or the $1,000 live product is a config change plus a
       # `docker compose restart`, never a code change or a redeploy.
+      # Authoritative trial length for this site. Do NOT also set
+      # STRIPE_TRIAL_DAYS in Infisical — `infisical run` overrides compose
+      # and would desync Stripe from marketing trial copy.
       STRIPE_TRIAL_DAYS: "{{ trial_period_days }}"
       # Transactional email. Non-secret host/port/from here; SMTP_USER +
       # SMTP_PASSWORD come from Infisical. ⚠️ DigitalOcean blocks outbound 587 —
