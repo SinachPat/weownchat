@@ -2175,6 +2175,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     themeId:'weown', accentOverride:'', assistantName:'', hasCustomLogo:false,
     logoUrl:'', themes:[], resolved:null, bookingUrl:'', bookingLabel:''
   };
+  var appearanceDirty=false;
 
   function setLogoPreview(url, custom){
     var box=document.getElementById('logo-preview');
@@ -2282,7 +2283,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
   async function loadAppearance(){
     var d=await j('GET','/api/embed-appearance');
     if(d.error){ return; }
-    appearanceState.themeId=d.themeId||'weown';
+    appearanceState.themeId=d.themeId||'weown'; appearanceDirty=true;
     appearanceState.accentOverride=d.accentOverride||'';
     appearanceState.assistantName=d.assistantName||'';
     appearanceState.hasCustomLogo=!!d.hasCustomLogo;
@@ -2360,7 +2361,8 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     appearanceState.resolved=d.resolved||appearanceState.resolved;
     applyAppearanceForm();
     msg.className='field-msg ok';
-    msg.textContent = d.persisted ? '✓ saved — re-copy the snippet below' : '✓ saved (note: may reset on redeploy)';
+    appearanceDirty=false;
+      msg.textContent = d.persisted ? '✓ saved — re-copy the snippet below' : '✓ saved (note: may reset on redeploy)';
     loadSnippet();
   });
 
@@ -2384,7 +2386,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
       appearanceState.hasCustomLogo=true;
       appearanceState.logoUrl=d.logoUrl||'';
       setLogoPreview(appearanceState.logoUrl.charAt(0)==='/'?appearanceState.logoUrl:appearanceState.logoUrl, true);
-      msg.className='field-msg ok'; msg.textContent='✓ logo uploaded — re-copy the snippet below';
+      appearanceDirty=false; msg.className='field-msg ok'; msg.textContent='✓ logo uploaded — re-copy the snippet below';
       loadSnippet();
     }catch(e){
       msg.className='field-msg err'; msg.textContent='could not upload the logo';
@@ -2432,8 +2434,25 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
   document.getElementById('copy-snippet').addEventListener('click',function(){
     var text=document.getElementById('snippet-pre').textContent;
     var btn=this, label=document.getElementById('copy-label');
-    function done(){btn.classList.add('copied'); label.textContent='Copied'; setTimeout(function(){btn.classList.remove('copied');label.textContent='Copy';},1800);}
-    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done);}else{done();}
+    function ok(){btn.classList.add('copied'); label.textContent='Copied'; setTimeout(function(){btn.classList.remove('copied');label.textContent='Copy';},1800);}
+    function fail(){label.textContent='Copy failed'; setTimeout(function(){label.textContent='Copy';},2200);}
+    function fallback(){
+      try{
+        var pre=document.getElementById('snippet-pre');
+        var range=document.createRange(); range.selectNodeContents(pre);
+        var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        var worked=document.execCommand('copy'); sel.removeAllRanges();
+        if(worked) ok(); else fail();
+      }catch(e){ fail(); }
+    }
+    if(appearanceDirty){
+      label.textContent='Save appearance first';
+      setTimeout(function(){label.textContent='Copy';},2200);
+      return;
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(ok).catch(fallback);
+    }else{ fallback(); }
   });
 
   // ── identity (sidebar avatar + email — DASHBOARD_CUSTOMER_EMAIL is optional,

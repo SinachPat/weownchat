@@ -115,8 +115,16 @@ const validateBookingUrl = (raw) => {
 const readBooking = () => {
   try {
     const j = JSON.parse(fs.readFileSync(BOOKING_FILE, 'utf8'));
-    const url = typeof j.url === 'string' ? j.url.trim() : '';
+    const rawUrl = typeof j.url === 'string' ? j.url.trim() : '';
     const label = typeof j.label === 'string' ? j.label.trim() : '';
+    // Re-validate on read so a hand-edited / stale booking.json cannot inject
+    // javascript:/data: (or non-localhost http) into the public companion CTA.
+    const checked = validateBookingUrl(rawUrl);
+    if (!checked.ok) {
+      console.error('[dashboard] booking.json URL rejected on read — treating as empty:', checked.error);
+      return { url: '', label: '' };
+    }
+    const url = checked.url;
     return { url, label: label || (url ? DEFAULT_BOOKING_LABEL : '') };
   } catch (e) {
     if (e.code !== 'ENOENT') console.error('[dashboard] booking.json unreadable — treating as empty:', e.message);
@@ -163,7 +171,7 @@ const EMBED_THEMES = {
   },
   softlight: {
     id: 'softlight', name: 'Soft Light', blurb: 'Light neutrals for bright marketing sites',
-    buttonColor: '#0ea5e9', userBgColor: '#38bdf8', assistantBgColor: '#f1f5f9', chatIcon: 'plus',
+    buttonColor: '#0369a1', userBgColor: '#075985', assistantBgColor: '#f1f5f9', chatIcon: 'plus',
   },
   forest: {
     id: 'forest', name: 'Forest', blurb: 'Quiet greens — practices and advisory firms',
@@ -172,6 +180,25 @@ const EMBED_THEMES = {
 };
 const DEFAULT_THEME_ID = 'weown';
 const isHexColor = (s) => /^#[0-9A-Fa-f]{6}$/.test(String(s || ''));
+/** Relative luminance 0–1 for #RRGGBB; used for booking CTA label ink. */
+const hexLuminance = (hex) => {
+  const h = String(hex || '').replace('#', '');
+  if (!/^[0-9A-Fa-f]{6}$/.test(h)) return 0;
+  const toLin = (c) => {
+    const v = parseInt(c, 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const r = toLin(h.slice(0, 2)), g = toLin(h.slice(2, 4)), b = toLin(h.slice(4, 6));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrastInk = (bgHex) => (hexLuminance(bgHex) > 0.45 ? '#0f172a' : '#fff');
+// Serialize appearance+logo RMWs (same idea as withDocLock).
+let appearanceWriteChain = Promise.resolve();
+const withAppearanceLock = (fn) => {
+  const run = appearanceWriteChain.then(() => fn(), () => fn());
+  appearanceWriteChain = run.catch(() => {});
+  return run;
+};
 const defaultAppearance = () => ({
   themeId: DEFAULT_THEME_ID,
   accentOverride: '',
@@ -203,6 +230,7 @@ const readAppearance = () => {
     return defaultAppearance();
   }
 };
+let appearanceMutex = Promise.resolve();
 const writeAppearance = (app) => {
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -274,9 +302,12 @@ const svgLooksSafe = (buf) => {
   if (/\bon\w+\s*=/i.test(s)) return false;
   if (/javascript:/i.test(s)) return false;
   if (/<foreignObject/i.test(s)) return false;
-  if (/<(iframe|object|embed)[\s>]/i.test(s)) return false;
-  // External / data hrefs (fragment # refs are fine)
-  if (/\b(?:xlink:)?href\s*=\s*["']?\s*(?:https?:|data:)/i.test(s)) return false;
+  if (/<(iframe|object|embed|style)[\s>]/i.test(s)) return false;
+  if (/@import/i.test(s)) return false;
+  // SMIL that can retarget event handlers
+  if (/<(?:set|animate|animateTransform)[\s>][^>]*attributeName\s*=\s*["']?on\w+/i.test(s)) return false;
+  // External / data / protocol-relative hrefs (fragment # refs are fine)
+  if (/\b(?:xlink:)?href\s*=\s*["']?\s*(?:https?:|data:|\/\/)/i.test(s)) return false;
   return true;
 };
 
@@ -1294,6 +1325,7 @@ const server = http.createServer(async (req, res) => {
       });
     }
     if (p === '/api/embed-appearance' && req.method === 'POST') {
+      return await withAppearanceLock(async () => {
       const body = await readBody(req);
       const app = readAppearance();
       if (body.themeId != null) {
@@ -1323,11 +1355,13 @@ const server = http.createServer(async (req, res) => {
           : `${BASE}/brand/weownchat-mark.svg`,
         resolved: theme,
       });
+      });
     }
 
     // Raw body logo upload (File as request body + X-Upload-Filename) — same
     // header convention as /api/upload, but stored locally under STATE_DIR.
     if (p === '/api/embed-logo' && req.method === 'POST') {
+      return await withAppearanceLock(async () => {
       const fname = req.headers['x-upload-filename'] || '';
       const ext = logoExtFromName(fname);
       if (!LOGO_EXTS.has(ext)) {
@@ -1378,8 +1412,10 @@ const server = http.createServer(async (req, res) => {
         console.error('[dashboard] logo save:', e.message);
         return send(res, 502, { error: 'could not save the logo' });
       }
+      });
     }
     if (p === '/api/embed-logo' && req.method === 'DELETE') {
+      return await withAppearanceLock(async () => {
       const app = readAppearance();
       clearCustomLogoFiles();
       app.logo = null;
@@ -1387,6 +1423,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, {
         ok: true, persisted, hasCustomLogo: false,
         logoUrl: `${BASE}/brand/weownchat-mark.svg`,
+      });
       });
     }
 
@@ -1430,6 +1467,7 @@ const server = http.createServer(async (req, res) => {
       // data-sponsor-text/link (avoids dual CTAs / AnythingLLM sponsor chrome).
       const booking = readBooking();
       const bookingBtnColor = theme.buttonColor;
+      const bookingTextColor = contrastInk(bookingBtnColor);
       let snippet =
         `<script data-embed-id="${escAttr(EMBED_ID)}"\n` +
         `  data-base-api-url="https://${escAttr(d)}/api/embed"\n` +
@@ -1451,7 +1489,7 @@ const server = http.createServer(async (req, res) => {
         // Prefer stacking above the AnythingLLM launcher when we can find it;
         // otherwise sit clear of a typical 56px FAB (safe-area aware).
         snippet += `\n<script>(function(){` +
-          `var u=${JSON.stringify(booking.url)},t=${JSON.stringify(label)},c=${JSON.stringify(bookingBtnColor)},relMode=false;` +
+          `var u=${JSON.stringify(booking.url)},t=${JSON.stringify(label)},c=${JSON.stringify(bookingBtnColor)},ink=${JSON.stringify(bookingTextColor)},relMode=false,tries=0;` +
           `function findLauncher(){` +
           `var sels=['[id*=\"anything-llm\" i]','[class*=\"anything-llm\" i]','[id*=\"allm-\" i]','[class*=\"allm-\" i]','button[aria-label*=\"chat\" i]'];` +
           `for(var i=0;i<sels.length;i++){try{var n=document.querySelector(sels[i]);if(n){var cs=getComputedStyle(n);if(cs.position==='fixed'||cs.position==='absolute')return n;}}catch(e){}}` +
@@ -1476,7 +1514,7 @@ const server = http.createServer(async (req, res) => {
           `b.id='weown-booking-cta';b.type='button';b.textContent=t;` +
           `b.setAttribute('aria-label',t);b.setAttribute('data-no-sponsor','true');` +
           `b.style.cssText='position:fixed;z-index:2147483646;` +
-          `background:'+c+';color:#fff;border:0;border-radius:999px;padding:12px 18px;` +
+          `background:'+c+';color:'+ink+';border:0;border-radius:999px;padding:12px 18px;` +
           `font:600 14px/1.2 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;` +
           `box-shadow:0 4px 14px rgba(0,0,0,.28);cursor:pointer;max-width:min(240px,calc(100vw - 40px));` +
           `white-space:nowrap;overflow:hidden;text-overflow:ellipsis';` +
@@ -1485,10 +1523,10 @@ const server = http.createServer(async (req, res) => {
           `}` +
           `place(b);` +
           `}` +
-          `function onResize(){var b=document.getElementById('weown-booking-cta');if(b&&relMode)place(b);}` +
-          `if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',mount);else mount();` +
+          `function onResize(){var b=document.getElementById('weown-booking-cta');if(b)place(b);}` +
+          `function retry(){mount();if(!relMode&&tries++<8)setTimeout(retry,500);}` +
+          `if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',retry);else retry();` +
           `window.addEventListener('resize',onResize);` +
-          `setTimeout(mount,600);` +
           `})();<\/script>`;
       }
       return send(res, 200, { snippet });

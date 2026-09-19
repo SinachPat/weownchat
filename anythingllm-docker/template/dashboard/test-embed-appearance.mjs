@@ -105,7 +105,7 @@ const withoutBooking = buildSnippet({
 });
 check('snippet contains booking when set', withBooking.includes('weown-booking-cta') && withBooking.includes('https://cal.com/x'), true);
 check('snippet omits booking when cleared', !withoutBooking.includes('weown-booking-cta'), true);
-check('snippet softlight button color', withBooking.includes('#0ea5e9'), true);
+check('snippet softlight button color', withBooking.includes('#0369a1'), true);
 check('snippet always no-sponsor', withBooking.includes('data-no-sponsor="true"') && withoutBooking.includes('data-no-sponsor="true"'), true);
 
 const stateDir = mkdtempSync(path.join(tmpdir(), 'embed-app-'));
@@ -134,6 +134,33 @@ check('UI appearance card', html.includes('id="widget-appearance"'), true);
 check('UI booking card', html.includes('id="booking-button"'), true);
 check('UI hours sample', html.includes('What are your hours?'), true);
 check('UI nav booking jump', html.includes('href="#booking-button"'), true);
+
+
+// --- P1 follow-ups: Soft Light contrast, SVG harden, booking re-read ---
+function relativeLuminance(hex){
+  const h = String(hex||'').replace('#','');
+  const toLin = (c) => { const v = parseInt(c,16)/255; return v<=0.03928 ? v/12.92 : ((v+0.055)/1.055)**2.4; };
+  const r=toLin(h.slice(0,2)), g=toLin(h.slice(2,4)), b=toLin(h.slice(4,6));
+  return 0.2126*r + 0.7152*g + 0.0722*b;
+}
+function contrastRatio(bg, fg){
+  const L1 = relativeLuminance(bg), L2 = relativeLuminance(fg);
+  const hi = Math.max(L1,L2), lo = Math.min(L1,L2);
+  return (hi+0.05)/(lo+0.05);
+}
+{
+  const m2 = src.match(/softlight:\s*\{[\s\S]*?buttonColor:\s*'([^']+)',\s*userBgColor:\s*'([^']+)',\s*assistantBgColor:\s*'([^']+)'/);
+  if (!m2) { console.error('FAIL softlight theme block'); process.exit(1); }
+  const [, btn, user, asst] = m2;
+  check('softlight user contrast vs white ≥ 4.5', contrastRatio(user, '#ffffff') >= 4.5, true);
+  check('softlight button contrast vs white ≥ 4.5', contrastRatio(btn, '#ffffff') >= 4.5, true);
+  check('softlight assistant stays #f1f5f9', asst, '#f1f5f9');
+}
+check('svg rejects protocol-relative href', svgLooksSafe(Buffer.from('<svg><a href="//evil.com">x</a></svg>')), false);
+check('svg rejects @import style', svgLooksSafe(Buffer.from('<svg><style>@import url(https://evil)</style></svg>')), false);
+check('svg rejects SMIL set onclick', svgLooksSafe(Buffer.from('<svg><set attributeName="onclick" to="alert(1)"/></svg>')), false);
+check('readBooking re-validates on read', src.includes('booking.json URL rejected on read') && src.includes('validateBookingUrl(rawUrl)'), true);
+
 
 console.log(bad ? `\n${bad} FAILURES` : `\nall checks pass`);
 process.exit(bad ? 1 : 0);
