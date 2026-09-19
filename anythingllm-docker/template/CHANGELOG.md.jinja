@@ -7,6 +7,14 @@ and this project adheres to [#WeOwnVer](https://github.com/WeOwnNetwork/ai/blob/
 
 ---
 
+## [Unreleased] — Harbor View embed appearance + booking CTA
+
+### Added
+
+- **Dashboard Public tab: chat widget appearance + booking button** — Soft Light / WeOwn / Harbor Gold / Midnight / Forest themes, logo upload (SVG harden + raster magic-byte sniff), accent override, assistant name, live mini-preview (booking CTA stacked above FAB when URL set; "What are your hours?" sample). Booking URL (https, or http for localhost) + label; empty URL hides the companion CTA. Snippet generation injects theme colors, brand image, `data-no-sponsor`, and the companion booking script when set. Persisted under `DASHBOARD_STATE_DIR` (`embed-appearance.json`, `embed-brand/`, `booking.json`). APIs: `GET/POST /api/embed-appearance`, `POST/DELETE /api/embed-logo`, `GET/POST /api/booking`, public `/brand/logo` + `/brand/weownchat-mark.svg`.
+
+---
+
 ## [Unreleased] — private chat no longer shares one conversation
 
 ### Fixed
