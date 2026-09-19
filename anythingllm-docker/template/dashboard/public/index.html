@@ -2283,7 +2283,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
   async function loadAppearance(){
     var d=await j('GET','/api/embed-appearance');
     if(d.error){ return; }
-    appearanceState.themeId=d.themeId||'weown'; appearanceDirty=true;
+    appearanceState.themeId=d.themeId||'weown';
     appearanceState.accentOverride=d.accentOverride||'';
     appearanceState.assistantName=d.assistantName||'';
     appearanceState.hasCustomLogo=!!d.hasCustomLogo;
@@ -2431,6 +2431,11 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     var d=await j('GET','/api/snippet');
     document.getElementById('snippet-pre').textContent = d.snippet || d.note || '';
   }
+  
+  ['accent-override','assistant-name'].forEach(function(id){
+    var el=document.getElementById(id); if(!el) return;
+    el.addEventListener('input', function(){ appearanceDirty=true; });
+  });
   document.getElementById('copy-snippet').addEventListener('click',function(){
     var text=document.getElementById('snippet-pre').textContent;
     var btn=this, label=document.getElementById('copy-label');
