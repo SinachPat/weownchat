@@ -2306,6 +2306,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
   document.getElementById('theme-grid').addEventListener('click',function(e){
     var card=e.target.closest('[data-theme-id]'); if(!card) return;
     appearanceState.themeId=card.dataset.themeId;
+    appearanceDirty=true;
     var t=(appearanceState.themes||[]).filter(function(x){return x.id===appearanceState.themeId;})[0];
     if(t){
       appearanceState.resolved={
