@@ -147,7 +147,7 @@ const writeBooking = (url, label) => {
 
 const escAttr = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 /** JSON.stringify safe inside an HTML <script> raw-text block (</script> breakout). */
-const jsonForScript = (v) => JSON.stringify(v).replace(/</g, '\u003c').replace(/>/g, '\u003e');
+const jsonForScript = (v) => JSON.stringify(v).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 
 // ── embed appearance (logo + curated themes) ─────────────────────────────────
 // High-taste presets only — not a free-form theme builder. Optional accent
