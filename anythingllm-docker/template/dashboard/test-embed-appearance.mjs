@@ -159,6 +159,12 @@ function contrastRatio(bg, fg){
 check('svg rejects protocol-relative href', svgLooksSafe(Buffer.from('<svg><a href="//evil.com">x</a></svg>')), false);
 check('svg rejects @import style', svgLooksSafe(Buffer.from('<svg><style>@import url(https://evil)</style></svg>')), false);
 check('svg rejects SMIL set onclick', svgLooksSafe(Buffer.from('<svg><set attributeName="onclick" to="alert(1)"/></svg>')), false);
+
+check('https userinfo rejected', validateBookingUrl('https://user:password@example.com/book').ok, false);
+check('https user only rejected', validateBookingUrl('https://user@example.com/book').ok, false);
+check('jsonForScript escapes < for script embed', src.includes('jsonForScript') && /jsonForScript[\s\S]{0,80}\\u003c/.test(src), true);
+check('UI dirty hooks use real field ids', /\['accent-hex','accent-color','assistant-name','booking-url','booking-label'\]/.test(html), true);
+
 check('readBooking re-validates on read', src.includes('booking.json URL rejected on read') && src.includes('validateBookingUrl(rawUrl)'), true);
 
 

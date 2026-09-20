@@ -2419,6 +2419,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     document.getElementById('booking-url').value=appearanceState.bookingUrl;
     document.getElementById('booking-label').value=appearanceState.bookingLabel;
     paintMini();
+    appearanceDirty=false;
     msg.className='field-msg ok';
     msg.textContent = d.persisted
       ? (appearanceState.bookingUrl ? '✓ saved — re-copy the snippet below' : '✓ booking button cleared')
@@ -2433,9 +2434,10 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     document.getElementById('snippet-pre').textContent = d.snippet || d.note || '';
   }
   
-  ['accent-override','assistant-name'].forEach(function(id){
+  ['accent-hex','accent-color','assistant-name','booking-url','booking-label'].forEach(function(id){
     var el=document.getElementById(id); if(!el) return;
     el.addEventListener('input', function(){ appearanceDirty=true; });
+    el.addEventListener('change', function(){ appearanceDirty=true; });
   });
   document.getElementById('copy-snippet').addEventListener('click',function(){
     var text=document.getElementById('snippet-pre').textContent;

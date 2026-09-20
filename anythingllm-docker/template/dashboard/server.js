@@ -106,6 +106,9 @@ const validateBookingUrl = (raw) => {
   try { u = new URL(s); } catch { return { ok: false, error: 'not a valid URL — use https://…' }; }
   if (u.protocol === 'javascript:' || u.protocol === 'data:' || u.protocol === 'vbscript:')
     return { ok: false, error: 'that URL scheme is not allowed' };
+  // Never accept userinfo — https://user:pass@host would leak into the public snippet.
+  if (u.username || u.password)
+    return { ok: false, error: 'booking URL must not include a username or password' };
   if (u.protocol === 'https:') return { ok: true, url: u.toString() };
   const host = (u.hostname || '').toLowerCase();
   if (u.protocol === 'http:' && (host === 'localhost' || host === '127.0.0.1' || host === '[::1]'))
@@ -141,7 +144,10 @@ const writeBooking = (url, label) => {
     return true;
   } catch (e) { console.error('[dashboard] could not persist booking:', e.message); return false; }
 };
+
 const escAttr = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** JSON.stringify safe inside an HTML <script> raw-text block (</script> breakout). */
+const jsonForScript = (v) => JSON.stringify(v).replace(/</g, '\u003c').replace(/>/g, '\u003e');
 
 // ── embed appearance (logo + curated themes) ─────────────────────────────────
 // High-taste presets only — not a free-form theme builder. Optional accent
@@ -1489,7 +1495,7 @@ const server = http.createServer(async (req, res) => {
         // Prefer stacking above the AnythingLLM launcher when we can find it;
         // otherwise sit clear of a typical 56px FAB (safe-area aware).
         snippet += `\n<script>(function(){` +
-          `var u=${JSON.stringify(booking.url)},t=${JSON.stringify(label)},c=${JSON.stringify(bookingBtnColor)},ink=${JSON.stringify(bookingTextColor)},relMode=false,tries=0;` +
+          `var u=${jsonForScript(booking.url)},t=${jsonForScript(label)},c=${jsonForScript(bookingBtnColor)},ink=${jsonForScript(bookingTextColor)},relMode=false,tries=0;` +
           `function findLauncher(){` +
           `var sels=['[id*=\"anything-llm\" i]','[class*=\"anything-llm\" i]','[id*=\"allm-\" i]','[class*=\"allm-\" i]','button[aria-label*=\"chat\" i]'];` +
           `for(var i=0;i<sels.length;i++){try{var n=document.querySelector(sels[i]);if(n){var cs=getComputedStyle(n);if(cs.position==='fixed'||cs.position==='absolute')return n;}}catch(e){}}` +

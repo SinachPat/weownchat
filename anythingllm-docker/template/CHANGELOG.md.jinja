@@ -19,6 +19,7 @@ and this project adheres to [#WeOwnVer](https://github.com/WeOwnNetwork/ai/blob/
 
 ### Fixed
 - Soft Light user/button contrast, SVG logo harden (`//`/`@import`/SMIL), booking URL re-validate on read, booking CTA ink + launcher retry, clipboard/unsaved snippet guard.
+- Reject booking URLs with embedded credentials; escape companion-script JSON to prevent `</script>` breakout; dirty-track accent-hex/booking fields.
 
 
 - **Dashboard private chat wrote every message into the workspace's shared default conversation** ([weown-fleet#55](https://github.com/WeOwnDev/weown-fleet/issues/55)). The page opened on "Main conversation", and a send without a thread went to `/api/v1/workspace/<private>/chat`, which carries the last 20 turns of that shared history into each answer. Measured on a live instance on 2026-09-17: a customer-style test question was answered with a document list drawn from months-old unrelated test chats, naming files not loaded in the workspace.
