@@ -2433,7 +2433,7 @@ svg.ico{width:17px;height:17px;flex:none;stroke:currentColor;stroke-width:1.7;fi
     var d=await j('GET','/api/snippet');
     document.getElementById('snippet-pre').textContent = d.snippet || d.note || '';
   }
-  
+
   ['accent-hex','accent-color','assistant-name','booking-url','booking-label'].forEach(function(id){
     var el=document.getElementById(id); if(!el) return;
     el.addEventListener('input', function(){ appearanceDirty=true; });
